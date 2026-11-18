@@ -6,6 +6,9 @@ import {
   networkViewSchema,
   dnsViewSchema,
   operationsViewSchema,
+  proxyAccessSchema,
+  proxyUsersSchema,
+  versionsSchema,
   planViewSchema,
   jobSchema,
   jobResultSchema,
@@ -86,15 +89,27 @@ export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJ
   }
   const port: Omit<NodeManagementPort, 'job'> = {
     restoreBackup: (backup, token) => request('backups/preview', planViewSchema, { backup, token }),
-    downloadClients: (format, content) => {
-      const url = URL.createObjectURL(
-        new Blob([content], { type: format === 'xray' ? 'application/json' : 'text/yaml' }),
+    downloadClients,
+    versions: () => request('versions', versionsSchema),
+    proxyAccess: () => request('proxy-access', proxyAccessSchema),
+    changeProxyAccess: (input) => request('proxy-access', proxyAccessSchema, input),
+    downloadProxyUsers: async () => {
+      const users = await request('proxy-access/export', proxyUsersSchema);
+      download('nodectl-users.json', 'application/json', JSON.stringify(users, null, 2));
+    },
+    importProxyUsers: async () => {
+      const file = await pickUserFile();
+      if (!file) return null;
+      if (file.size > 128 * 1024) throw new Error('用户文件超过 128 KiB。');
+      const users = proxyUsersSchema.parse(JSON.parse(await file.text()));
+      return request('proxy-access', proxyAccessSchema, { action: 'import', users });
+    },
+    downloadProxyProfile: async (device, format) => {
+      const { content } = await request(
+        'proxy-access/profile/' + encodeURIComponent(device) + '/' + format,
+        z.object({ content: z.string() }),
       );
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = format === 'xray' ? 'nodectl-xray.json' : 'nodectl-mihomo.yaml';
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadClients(format, content);
     },
     overview: () => request('overview', overviewSchema),
     configuration: () => request('config', configurationViewSchema),
@@ -134,4 +149,33 @@ export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJ
       onUnauthorized();
     },
   };
+}
+
+function download(name: string, type: string, content: string) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadClients(format: 'xray' | 'mihomo', content: string) {
+  const xray = format === 'xray';
+  download(
+    xray ? 'nodectl-xray.json' : 'nodectl-mihomo.yaml',
+    xray ? 'application/json' : 'text/yaml',
+    content,
+  );
+}
+
+function pickUserFile() {
+  return new Promise<File | null>((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.addEventListener('change', () => resolve(input.files?.item(0) ?? null), { once: true });
+    input.addEventListener('cancel', () => resolve(null), { once: true });
+    input.click();
+  });
 }

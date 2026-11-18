@@ -280,3 +280,45 @@ export type ProvisionOptions = Readonly<{
   accept_warp_terms: boolean;
   skip_dependencies: boolean;
 }>;
+
+export const proxyUsersSchema = z.array(
+  z.object({ username: z.string(), device_limit: z.number().int().optional() }).strict(),
+);
+export const proxyAccessSchema = z.object({
+  enabled: z.boolean(),
+  ttl_seconds: z.number(),
+  portal: z.string(),
+  users: z.array(
+    z.object({
+      username: z.string(),
+      device_limit: z.number(),
+      devices: z.array(
+        z.object({ id: z.string(), label: z.string(), expires: z.number().nullable() }),
+      ),
+    }),
+  ),
+});
+export type ProxyAccess = z.infer<typeof proxyAccessSchema>;
+export type ProxyAccessChange =
+  | { action: 'settings'; enabled: boolean; ttl_seconds: number }
+  | { action: 'create'; users: { username: string; password: string; device_limit?: number }[] }
+  | { action: 'import'; users: z.infer<typeof proxyUsersSchema> }
+  | { action: 'delete'; usernames: string[] }
+  | { action: 'edit'; username: string; device_limit: number; password?: string }
+  | { action: 'create-device'; username: string; label: string }
+  | { action: 'delete-device'; device: string };
+
+export const versionsSchema = z.object({
+  running: z.string(),
+  lookup_failed: z.boolean(),
+  releases: z.array(z.string()),
+  proxy_access_enabled: z.boolean(),
+  status: z
+    .object({
+      target: z.string(),
+      finished: z.number().nullable(),
+      ok: z.boolean().nullable(),
+    })
+    .nullable(),
+});
+export type VersionsView = z.infer<typeof versionsSchema>;

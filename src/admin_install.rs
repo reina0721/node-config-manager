@@ -127,7 +127,8 @@ pub(crate) fn renew_if_installed(c: &config::Config) -> Result<()> {
 pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
     let (c, _) = s.inputs()?;
     ensure!(
-        ![c.ports.http, c.ports.https, c.ports.reality, 9080].contains(&port),
+        ![c.ports.http, c.ports.https, c.ports.reality, 9080].contains(&port)
+            && (!crate::proxy_access::enabled(s)? || !crate::proxy_access::reserved_port(port)),
         "Admin HTTPS port collides with node or API listeners"
     );
     for path in [
@@ -281,6 +282,7 @@ pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
                 "nodectl-admin-nginx",
             ],
         )?;
+        verify_api_ready()?;
         Ok(())
     })();
     if result.is_err() {
@@ -320,6 +322,33 @@ pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
     }
     Ok(())
 }
+fn verify_api_ready() -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while std::time::Instant::now() < deadline {
+        if let Ok(status) = host::command(
+            "curl",
+            &[
+                "--disable",
+                "--noproxy",
+                "*",
+                "--silent",
+                "--max-time",
+                "1",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "http://127.0.0.1:9080/admin/api/session",
+            ],
+        ) && status == "401"
+        {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    anyhow::bail!("Admin API did not become ready")
+}
+
 fn public_dir(p: &Path) -> Result<()> {
     let root = Path::new(ROOT);
     ensure!(p.starts_with(root), "Static root escape");

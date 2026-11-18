@@ -15,6 +15,9 @@ import type {
   OperationInput,
   OperationsView,
   ProvisionOptions,
+  ProxyAccess,
+  ProxyAccessChange,
+  VersionsView,
 } from './node-model';
 export * from './node-model';
 export type NodeManagementPort = Readonly<{
@@ -25,6 +28,12 @@ export type NodeManagementPort = Readonly<{
   dns: () => Promise<DnsView>;
   services: () => Promise<readonly ManagedService[]>;
   operations: () => Promise<OperationsView>;
+  versions: () => Promise<VersionsView>;
+  proxyAccess: () => Promise<ProxyAccess>;
+  changeProxyAccess: (input: ProxyAccessChange) => Promise<ProxyAccess>;
+  downloadProxyUsers: () => Promise<void>;
+  importProxyUsers: () => Promise<ProxyAccess | null>;
+  downloadProxyProfile: (device: string, format: 'xray' | 'mihomo') => Promise<void>;
   unlock: (token: string) => Promise<string>;
   preview: (config: NodeConfiguration, unlock?: string) => Promise<ConfigPlan>;
   restoreBackup: (backup: string, token: string) => Promise<ConfigPlan>;

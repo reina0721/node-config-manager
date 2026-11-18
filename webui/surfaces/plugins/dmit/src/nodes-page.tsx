@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { Section } from '@community-go/surface-foundation/layout';
 import { DataTable } from '@community-go/ui-adapter/data-display';
 import { Action } from '@community-go/ui-adapter/action';
@@ -15,9 +15,11 @@ import {
   useNodeQuery,
   useNodeText,
 } from './common';
+const ProxyAccessPanel = lazy(() => import('./proxy-access-panel'));
 export default function NodesPage() {
   const api = useNodeManagement();
   const q = useNodeQuery(api.nodes);
+  const access = useNodeQuery(api.proxyAccess);
   const t = useNodeText();
   const [result, setResult] = useState<JobResult | null>(null);
   const [content, setContent] = useState('');
@@ -37,7 +39,14 @@ export default function NodesPage() {
     }
   };
   return (
-    <NodePage name="nodes" loading={q.loading} error={q.error} refresh={q.refresh}>
+    <NodePage
+      name="nodes"
+      loading={q.loading || access.loading}
+      error={q.error || access.error}
+      refresh={async () => {
+        await Promise.all([q.refresh(), access.refresh()]);
+      }}
+    >
       <JobProgress />
       {q.data ? (
         <>
@@ -91,42 +100,49 @@ export default function NodesPage() {
           </Section>
         </>
       ) : null}
-      <Section title={t('nodes.export')} description={t('nodes.exportRisk')} contentInset>
-        <div className="flex flex-wrap gap-3">
-          <Action
-            variant="secondary"
-            disabled={!q.data || loading}
-            loading={loading}
-            onPress={() => {
-              void exportClients('xray');
-            }}
-          >
-            {t('nodes.xray')}
-          </Action>
-          <Action
-            variant="secondary"
-            disabled={!q.data || loading}
-            onPress={() => {
-              void exportClients('mihomo');
-            }}
-          >
-            {t('nodes.mihomo')}
-          </Action>
-        </div>
-        {content ? (
-          <div className="mt-4 grid gap-3">
-            <div>
-              <Action variant="secondary" onPress={() => api.downloadClients(format, content)}>
-                {t('nodes.saveFile')}
-              </Action>
-            </div>
-            <Code>{content}</Code>
+      {access.data ? (
+        <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+          <ProxyAccessPanel data={access.data} refresh={access.refresh} />
+        </Suspense>
+      ) : null}
+      {access.data?.enabled === false ? (
+        <Section title={t('nodes.export')} description={t('nodes.exportRisk')} contentInset>
+          <div className="flex flex-wrap gap-3">
+            <Action
+              variant="secondary"
+              disabled={!q.data || loading}
+              loading={loading}
+              onPress={() => {
+                void exportClients('xray');
+              }}
+            >
+              {t('nodes.xray')}
+            </Action>
+            <Action
+              variant="secondary"
+              disabled={!q.data || loading}
+              onPress={() => {
+                void exportClients('mihomo');
+              }}
+            >
+              {t('nodes.mihomo')}
+            </Action>
           </div>
-        ) : null}
-        {error ? (
-          <AlertBanner icon="!" tone="danger" title={t('common.failed')} description={error} />
-        ) : null}
-      </Section>
+          {content ? (
+            <div className="mt-4 grid gap-3">
+              <div>
+                <Action variant="secondary" onPress={() => api.downloadClients(format, content)}>
+                  {t('nodes.saveFile')}
+                </Action>
+              </div>
+              <Code>{content}</Code>
+            </div>
+          ) : null}
+          {error ? (
+            <AlertBanner icon="!" tone="danger" title={t('common.failed')} description={error} />
+          ) : null}
+        </Section>
+      ) : null}
       <TaskResult result={result} />
     </NodePage>
   );

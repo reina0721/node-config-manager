@@ -1330,7 +1330,7 @@ fn apply_inner(
                 "Applied entrypoint has drifted: {dest}"
             );
         }
-        health(&c, &s, &r.reference)?;
+        health(store, &c, &s, &r.reference)?;
         if c.routes_cn() {
             for (destination, source) in CN_ENTRIES {
                 ensure!(
@@ -1582,7 +1582,7 @@ fn activate(
         }
     }
     checkpoint("services")?;
-    health(c, s, &r.reference)?;
+    health(store, c, s, &r.reference)?;
     checkpoint("health")?;
     ensure!(
         routes_without_cn(&tx.routes, tx.cn.as_ref())?
@@ -1722,7 +1722,7 @@ fn restore(store: &Store, tx: &Transaction) -> Result<()> {
         let result = (|| {
             let r = receipt(store, id)?;
             let (c, s) = preflight(store, id, &r.reference)?;
-            health(&c, &s, &r.reference)
+            health(store, &c, &s, &r.reference)
         })();
         attempt("previous release checks and live health", result);
     } else {
@@ -1781,7 +1781,7 @@ fn retry<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
     }
 }
 
-fn health(c: &Config, s: &Secrets, reference: &Reference) -> Result<()> {
+fn health(store: &Store, c: &Config, s: &Secrets, reference: &Reference) -> Result<()> {
     for name in ["xray", "nginx"] {
         command("systemctl", &["is-active", "--quiet", name])?;
     }
@@ -1842,7 +1842,7 @@ fn health(c: &Config, s: &Secrets, reference: &Reference) -> Result<()> {
     }
     reference.verify()?;
     for kind in ["xhttp", "ws", "reality"] {
-        handshake(c, s, reference, kind)
+        handshake(store, c, s, reference, kind)
             .with_context(|| format!("{kind} live handshake failed"))?;
     }
     crate::cn_warp::health(c)?;
@@ -1860,14 +1860,23 @@ fn health(c: &Config, s: &Secrets, reference: &Reference) -> Result<()> {
 pub(crate) fn verify_live_success(store: &Store, id: &str) -> Result<()> {
     let receipt = receipt(store, id)?;
     let (c, s) = store.verify(id)?;
-    health(&c, &s, &receipt.reference)
+    health(store, &c, &s, &receipt.reference)
 }
 
-fn handshake(c: &Config, s: &Secrets, reference: &Reference, kind: &str) -> Result<()> {
+fn handshake(
+    store: &Store,
+    c: &Config,
+    s: &Secrets,
+    reference: &Reference,
+    kind: &str,
+) -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let mut outbound = render::outbound(c, s, kind, "chrome")?;
+    if let Some(id) = crate::proxy_access::health_id(store)? {
+        outbound["settings"]["vnext"][0]["users"][0]["id"] = json!(id);
+    }
     // Isolated integration fixtures use an ephemeral CA installed in the OS.
     // Xray otherwise defaults to its embedded public roots. Keep verification
     // enabled; release binaries never include this test-only trust selection.
@@ -1928,7 +1937,7 @@ fn handshake(c: &Config, s: &Secrets, reference: &Reference, kind: &str) -> Resu
 pub(crate) fn previous_clients(store: &Store, old: &str, reference: &Reference) -> Result<()> {
     let (c, s) = store.verify(old)?;
     for kind in ["xhttp", "ws", "reality"] {
-        handshake(&c, &s, reference, kind)
+        handshake(store, &c, &s, reference, kind)
             .with_context(|| format!("Previous {kind} client no longer connects after upgrade"))?;
     }
     Ok(())
@@ -2047,6 +2056,10 @@ fn validate_transaction(store: &Store, tx: &Transaction) -> Result<()> {
 }
 
 pub fn uninstall(store: &Store, execute: bool) -> Result<()> {
+    ensure!(
+        !crate::proxy_access::enabled(store)?,
+        "Disable browser proxy access before uninstalling the managed node"
+    );
     let current = store
         .pointer("current")?
         .context("No installed successful release")?;

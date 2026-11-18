@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "nodectl"
-version = "0.6.5"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -599,15 +599,18 @@ dependencies = [
  "percent-encoding",
  "rand",
  "regex",
+ "ring",
  "rustls",
  "schemars",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sha2",
  "similar",
  "subtle",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "toml",
  "unicode-general-category",
  "uuid",
@@ -1042,6 +1045,7 @@ version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
+ "bytes",
  "libc",
  "mio",
  "pin-project-lite",
@@ -1060,6 +1064,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "tokio-rustls"
+version = "0.26.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
+dependencies = [
+ "rustls",
+ "tokio",
 ]
 
 [[package]]
@@ -1189,6 +1203,7 @@ checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

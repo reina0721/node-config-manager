@@ -68,7 +68,10 @@ fn real_api_preserves_inputs_and_enforces_session_policy_review_and_reset() {
     let state = tmp.path().join("state");
     let mut example: toml::Value =
         toml::from_str(include_str!("../config/node.example.toml")).unwrap();
-    example.as_table_mut().unwrap().remove("vless");
+    let example_fields = example.as_table_mut().unwrap();
+    example_fields.remove("vless");
+    // The isolated API test does not provision the optional pinned geodata.
+    example_fields.remove("cn_warp");
     fs::create_dir(&config).unwrap();
     #[cfg(unix)]
     {

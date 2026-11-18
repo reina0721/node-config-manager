@@ -15,8 +15,8 @@
 此模式不调用部署、不操作服务，适合已有自动化链路：
 
 ```sh
-sh dmitserverconfig-setup.sh --install-only --version v0.6.4 --dry-run
-sudo sh dmitserverconfig-setup.sh --install-only --version v0.6.4 --execute
+sh node-config-manager-setup.sh --install-only --version v0.6.4 --dry-run
+sudo sh node-config-manager-setup.sh --install-only --version v0.6.4 --execute
 ```
 
 原有明确指定 `--execute/--dry-run` 的命令保留工具安装语义。`nodectl upgrade` 也调用工具安装模式，避免递归进入向导。固定版本的 dry-run 不下载或创建文件；未固定版本时只会查询最新版本元数据。
@@ -31,8 +31,20 @@ sudo sh dmitserverconfig-setup.sh --install-only --version v0.6.4 --execute
 
 ## 发布与源码
 
-两个架构均以 Debian 12 glibc 基线原生构建。归档包括程序、许可、依赖许可、CycloneDX SBOM 和构建信息；Release 包含清单、Sigstore bundle、安装器及发行说明。可额外使用 `gh attestation verify <archive> --repo reina0721/dmit-node-config` 检查构建证明。
+两个架构均以 Debian 12 glibc 基线原生构建。归档包括程序、许可、依赖许可、CycloneDX SBOM 和构建信息；Release 包含清单、Sigstore bundle、安装器及发行说明。可额外使用 `gh attestation verify <archive> --repo reina0721/node-config-manager` 检查构建证明。
 
-正式版本来自 [GitHub Releases](https://github.com/reina0721/dmit-node-config/releases)。源码开发构建见 [贡献指南](../CONTRIBUTING.md)，本地候选不能冒充正式发行资产。系统矩阵与交付证据见 [验收记录](defect/08-one-command-delivery.md)。
+正式版本来自 [GitHub Releases](https://github.com/reina0721/node-config-manager/releases)。源码开发构建见 [贡献指南](../CONTRIBUTING.md)，本地候选不能冒充正式发行资产。系统矩阵与交付证据见 [验收记录](defect/08-one-command-delivery.md)。
 
 全量质量及系统集成工作流只在手动触发时运行；标签触发的 Release 工作流仅原生构建、检查实际归档、生成 SBOM、签名及验证上传来源证明。不会为打包安装节点运行依赖；生产服务仍在目标主机原生运行。
+
+## 网页在线切换版本
+
+从发布了该功能的 v0.7.0 起，打开 **运维中心 → nodectl 版本管理**，选择或输入正式版标签。高于当前版本时升级，相同版本时重新安装，低于当前版本时回退。切换会下载签名归档、校验目标版本能读取当前及上一节点快照，然后一起激活程序、API 与静态后台。API 会短暂重启，完成后刷新网页并使用原管理员 Token 登录。后台展示最后一次切换状态，服务端日志可通过 `journalctl -u nodectl-admin-version-switch` 查看。
+
+网页切换的最低目标为 v0.6.5。启用浏览器认证时，最低目标为 v0.7.0。v0.6.5 的发布程序只能读取它支持的节点快照。目标不兼容时，切换在替换程序前停止。仓库改名前 v0.6.1–v0.6.5 的归档从当前仓库下载，验签固定使用各版本发行时的工作流身份。
+
+从 v0.6.5 首次升级到具备网页切换的版本，或回退到 v0.6.5 后再次升级，需要先通过 SSH 安装新版控制台。正式资产发布后，用新版 `install.sh` 执行，端口填写已有后台的 HTTPS 端口。
+
+```sh
+sudo sh node-config-manager-setup.sh --switch-admin --version v0.7.0 --admin-port 9443 --execute
+```

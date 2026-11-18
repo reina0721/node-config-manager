@@ -1,4 +1,4 @@
-//! Bounded single-admin API. No shell, user accounts, database or public listener.
+//! Bounded single-administrator API for node operations and proxy access.
 use crate::{
     admin_auth as auth, admin_policy as policy, admin_read as read,
     config::{self, Config},
@@ -46,6 +46,13 @@ pub enum Action {
         #[arg(long,default_value_t=9443,value_parser=clap::value_parser!(u16).range(1024..))]
         port: u16,
     },
+    #[command(hide = true)]
+    SwitchVersion {
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        port: u16,
+    },
     /// Generate a credential once; preserve an existing administrator.
     Init,
     /// Invalidate all sessions and print a new administrator token once.
@@ -61,6 +68,7 @@ pub enum Action {
 }
 pub fn run(store: Store, action: Action) -> Result<()> {
     match action {
+        Action::SwitchVersion { version, port } => crate::upgrade::switch(&store, &version, port)?,
         Action::Install {
             assets,
             archive,
@@ -349,7 +357,16 @@ async fn handle(
                 | "not_deployed"
                 | "not_found"
                 | "method_not_allowed"
-                | "bad_request" => error.as_str(),
+                | "bad_request"
+                | "invalid_proxy_ttl"
+                | "invalid_proxy_username"
+                | "invalid_proxy_password"
+                | "invalid_proxy_device_limit"
+                | "invalid_proxy_batch"
+                | "invalid_proxy_device"
+                | "proxy_user_exists"
+                | "version_switch_pending"
+                | "version_auth_incompatible" => error.as_str(),
                 _ => "operation_failed",
             };
             let _ = audit.audit("request-denied", code, None);
@@ -393,6 +410,15 @@ async fn handle(
 }
 fn remedy(code: &str) -> &str {
     match code {
+        "invalid_proxy_ttl" => "认证有效期应为一分钟到九十天。",
+        "invalid_proxy_username" => "用户名应为 1–64 个字母、数字或 ._ - @ 字符。",
+        "invalid_proxy_password" => "密码长度应为 6–256 字节。",
+        "invalid_proxy_device_limit" => "设备上限应为 1–32 台。",
+        "invalid_proxy_batch" => "批量新建或导入支持每次 1–50 个账号。",
+        "invalid_proxy_device" => "请检查设备名称或已登记设备数。",
+        "proxy_user_exists" => "用户名重复或已经存在。",
+        "version_switch_pending" => "正在切换 nodectl 版本，请稍候。",
+        "version_auth_incompatible" => "启用浏览器认证时可切换到 v0.7.0 或更高版本。",
         "unauthorized" => "会话失效或 Token 不正确，请重新登录。",
         "reauth_denied" => "管理员 Token 重新认证失败，请检查后重试；当前会话仍有效。",
         "rate_limited" => "登录尝试过于频繁，请等待一分钟。",
@@ -535,6 +561,18 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
                 json!({"config":c,"assets":policy::ASSETS,"base":policy::fingerprint(&app.store)?,"safe_mode":true})
             }
             "nodes" => read::nodes(&app.store)?,
+            "proxy-access" => crate::proxy_access::list(&app.store)?,
+            "proxy-access/export" => crate::proxy_access::export(&app.store)?,
+            "versions" => crate::upgrade::versions(&app.store)?,
+            p if p.starts_with("proxy-access/profile/") => {
+                let (id, format) = p["proxy-access/profile/".len()..]
+                    .split_once('/')
+                    .context("bad_request")?;
+                let id = uuid::Uuid::parse_str(id).map_err(|_| anyhow::anyhow!("bad_request"))?;
+                let content = crate::proxy_access::profile(&app.store, id, format)?;
+                app.audit("proxy-access-profile", "success", None)?;
+                json!({"content":content})
+            }
             "clients/xray" | "clients/mihomo" => {
                 let _guard = app.store.lock()?;
                 let (kind, bytes) = crate::share::current_clients(
@@ -591,6 +629,10 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
         };
         return Ok((value, None));
     }
+    ensure!(
+        matches!(path, "logout" | "proxy-access") || !crate::upgrade::pending(&app.store)?,
+        "version_switch_pending"
+    );
     let value = match path {
         "logout" => {
             decode::<BTreeMap<String, Value>>(body)?;
@@ -682,6 +724,38 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
             store::atomic_write(&dir.join("cloudflare-zone"), input.zone.as_bytes())?;
             app.audit("cloudflare-credentials", "success", None)?;
             json!({"saved":true})
+        }
+        "proxy-access" => {
+            let action: crate::proxy_access::Change = decode(body)?;
+            let revocation = matches!(
+                action,
+                crate::proxy_access::Change::Delete { .. }
+                    | crate::proxy_access::Change::DeleteDevice { .. }
+            );
+            ensure!(
+                revocation || !app.busy.load(Ordering::SeqCst),
+                "operation_busy"
+            );
+            if matches!(
+                action,
+                crate::proxy_access::Change::Settings { enabled: true, .. }
+            ) {
+                let origin: Uri = app.origin.parse()?;
+                ensure!(
+                    !origin
+                        .port_u16()
+                        .is_some_and(crate::proxy_access::reserved_port),
+                    "reserved_port"
+                );
+            }
+            ensure!(
+                revocation || !crate::upgrade::pending(&app.store)?,
+                "version_switch_pending"
+            );
+            let result =
+                crate::proxy_access::change(&app.store, action, &std::env::current_exe()?)?;
+            app.audit("proxy-access-change", "success", None)?;
+            result
         }
         "operations" => {
             let input: Operation = decode(body)?;
@@ -1089,20 +1163,11 @@ impl App {
                 }
             }
             "upgrade" => {
-                let v = input.version.as_deref().context("bad_request")?;
-                ensure!(
-                    regex::Regex::new(r"^v?[0-9]+\.[0-9]+\.[0-9]+$")?.is_match(v),
-                    "bad_request"
-                );
-                let version = v
-                    .trim_start_matches('v')
-                    .split('.')
-                    .map(str::parse::<u64>)
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                ensure!(
-                    version.as_slice() >= [0, 6, 0].as_slice(),
-                    "Web upgrades require nodectl v0.6.0 or newer; use the CLI for deliberate legacy tool restoration"
-                );
+                ensure!(!self.development, "bad_request");
+                crate::upgrade::validate_web(
+                    &self.store,
+                    input.version.as_deref().context("bad_request")?,
+                )?;
             }
             _ => bail!("bad_request"),
         }
@@ -1111,14 +1176,14 @@ impl App {
     fn operation(&self, input: Operation, job: &str) -> Result<Value> {
         self.phase(job, &input.operation);
         if input.operation == "upgrade" {
-            crate::upgrade::run(
+            let origin: Uri = self.origin.parse()?;
+            crate::upgrade::schedule(
                 &self.store,
                 input.version.as_deref().unwrap(),
-                std::path::Path::new("/usr/local"),
-                true,
+                origin.port_u16().context("Missing admin port")?,
             )?;
             return Ok(
-                json!({"installed":input.version,"message":"新 CLI 已验签安装；当前 API 进程继续使用原版本，需由 systemd 重新启动。"}),
+                json!({"version_switch_scheduled":true,"message":"版本切换已排队。后台重启后，请刷新页面并重新登录。"}),
             );
         }
         let _guard = if input.operation == "recover" {

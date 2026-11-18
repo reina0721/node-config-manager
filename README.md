@@ -1,8 +1,10 @@
-# dmit-node-config
+# node-config-manager
 
 一条命令，在 Debian / Ubuntu 上交互部署 Nginx、Xray Core 和可选 WARP。已有部署也使用同一入口更新，优先保留配置和密钥。服务原生运行，由 systemd 管理。
 
-当前版本：[v0.6.5](https://github.com/reina0721/dmit-node-config/releases/tag/v0.6.5)。
+正式发行包见 [GitHub Releases](https://github.com/reina0721/node-config-manager/releases)。
+
+v0.7.0 新增 [浏览器代理认证](docs/node-access.md#浏览器认证) 和 [网页在线切换版本](docs/installation.md#网页在线切换版本)。项目名为 `node-config-manager`，应用继续使用 `nodectl`。
 
 v0.6.5 修复 ACME 验证时 IPv6 Socket 端口复用（添加 `SO_REUSEADDR`/`SO_REUSEPORT` 避免 Nginx 启动时报 `[::]:80 Address already in use`），支持规范化 IPv6（RFC 5952）输入，优化 ACME 端口释放生命周期与服务回滚健壮性。
 
@@ -23,12 +25,14 @@ v0.6.0 新增 DMIT 单机 Web 管理后台：复用 console-web 设计系统与�
 ```bash
 curl -fL --proto '=https' --proto-redir '=https' \
   --connect-timeout 20 --max-time 1800 \
-  -o dmitserverconfig-setup.sh \
-  https://raw.githubusercontent.com/reina0721/dmit-node-config/main/install.sh &&
-bash dmitserverconfig-setup.sh
+  -o node-config-manager-setup.sh \
+  https://raw.githubusercontent.com/reina0721/node-config-manager/main/install.sh &&
+bash node-config-manager-setup.sh
 ```
 
 运行后按终端提示填写域名、IP、端口和可选 WARP，选择自动或手动 DNS / 证书，审阅变更并输入 `yes`。脚本会下载并验签正式版，完成部署、服务握手验证及客户端导出。
+
+首次部署需要网页后台时，加上 `--with-admin`。已有后台可通过运维中心切换已签名版本。
 
 **更新也运行上面同一条命令。** 安装完成后使用 `nodectl` 管理；客户端文件的私密保存位置会在终端显示。[查看向导填写说明 →](docs/getting-started.md)
 

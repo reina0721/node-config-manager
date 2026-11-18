@@ -12,6 +12,7 @@ mod diagnostics;
 mod dns;
 mod host;
 mod provision;
+mod proxy_access;
 mod render;
 #[allow(dead_code)]
 mod render_legacy;
@@ -56,6 +57,11 @@ enum Action {
     Web {
         #[command(subcommand)]
         action: web_services::Action,
+    },
+    #[command(hide = true)]
+    ProxyAccess {
+        #[command(subcommand)]
+        action: ProxyRuntime,
     },
     /// Internal marked-route lifecycle for the managed independent tunnel.
     #[command(hide = true)]
@@ -148,6 +154,14 @@ enum Action {
     Schema,
 }
 
+#[derive(Subcommand)]
+enum ProxyRuntime {
+    Check,
+    Start,
+    Prepare,
+    Serve,
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     if matches!(cli.command, Action::Schema) {
@@ -160,6 +174,12 @@ fn run() -> Result<()> {
     let store = store::Store::new(cli.config_dir, cli.state_dir)?;
     match cli.command {
         Action::Admin { action } => admin::run(store, action)?,
+        Action::ProxyAccess { action } => match action {
+            ProxyRuntime::Check => proxy_access::launch(true)?,
+            ProxyRuntime::Start => proxy_access::launch(false)?,
+            ProxyRuntime::Prepare => proxy_access::prepare(&store)?,
+            ProxyRuntime::Serve => proxy_access::serve(&store)?,
+        },
         Action::Web { action } => web_services::run(&store, action)?,
         Action::CnRoute(command) => cn_route::run(command)?,
         Action::Doctor { json } => diagnostics::doctor(&store, json)?,

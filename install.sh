@@ -2,24 +2,26 @@
 # Default: verified nodectl installation followed by the Rust deployment wizard.
 set -eu
 umask 077
-VERSION= PREFIX=/usr/local EXECUTE=no MODE=wizard BUNDLE_DIR= CONFIG_DIR=/etc/dmit-node STATE_DIR=/var/lib/dmit-node TOKEN_FILE= WITH_ADMIN=no
-REPOSITORY=reina0721/dmit-node-config
-usage() { printf '%s\n' 'Usage: bash install.sh [--version vX.Y.Z] [--install-only --execute | --dry-run] [--with-admin] [--prefix /usr/local] [--bundle-dir PATH] [--config-dir PATH] [--state-dir PATH]' 'No action flag: install a verified stable release and run the complete interactive deployment wizard.' 'Legacy --execute/--dry-run explicitly select tool-only installation.' '--with-admin installs the signed static WebUI with separate HTTPS on 9443 after a valid node deployment (v0.6.0+).'; }
+VERSION= PREFIX=/usr/local EXECUTE=no MODE=wizard BUNDLE_DIR= CONFIG_DIR=/etc/dmit-node STATE_DIR=/var/lib/dmit-node TOKEN_FILE= WITH_ADMIN=no ADMIN_PORT=9443 EXPLICIT_ACTION=no
+REPOSITORY=reina0721/node-config-manager
+usage() { printf '%s\n' 'Usage: bash install.sh [--version vX.Y.Z] [--install-only --execute | --dry-run] [--switch-admin --admin-port PORT --execute] [--with-admin] [--prefix /usr/local] [--bundle-dir PATH] [--config-dir PATH] [--state-dir PATH]' 'No action flag: install a verified stable release and run the complete interactive deployment wizard.' 'Legacy --execute/--dry-run explicitly select tool-only installation.' '--with-admin installs the signed static WebUI with separate HTTPS on 9443 after a valid node deployment (v0.6.0+).'; }
 die() { printf 'install: %s\n' "$*" >&2; exit 1; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --version|--prefix|--bundle-dir|--config-dir|--state-dir|--token-file)
+    --version|--prefix|--bundle-dir|--config-dir|--state-dir|--token-file|--admin-port)
       [ "$#" -ge 2 ] || die "Missing value for $1"
-      case "$1" in --version) VERSION=$2;; --prefix) PREFIX=$2;; --bundle-dir) BUNDLE_DIR=$2;; --config-dir) CONFIG_DIR=$2;; --state-dir) STATE_DIR=$2;; --token-file) TOKEN_FILE=$2;; esac
+      case "$1" in --version) VERSION=$2;; --prefix) PREFIX=$2;; --bundle-dir) BUNDLE_DIR=$2;; --config-dir) CONFIG_DIR=$2;; --state-dir) STATE_DIR=$2;; --token-file) TOKEN_FILE=$2;; --admin-port) ADMIN_PORT=$2;; esac
       shift 2;;
     --install-only) MODE=install; shift;;
-    --execute) MODE=install; EXECUTE=yes; shift;;
-    --dry-run) MODE=install; EXECUTE=no; shift;;
+    --switch-admin) MODE=switch-admin; shift;;
+    --execute) EXECUTE=yes; EXPLICIT_ACTION=yes; shift;;
+    --dry-run) EXECUTE=no; EXPLICIT_ACTION=yes; shift;;
     --with-admin) WITH_ADMIN=yes; shift;;
     --help|-h) usage; exit 0;;
     *) die "Unknown option: $1";;
   esac
 done
+if [ "$MODE" = wizard ] && [ "$EXPLICIT_ACTION" = yes ]; then MODE=install; fi
 if [ "$MODE" = wizard ]; then
   [ -t 0 ] || die 'Interactive installation requires a terminal; use --install-only and explicit non-interactive nodectl approval'
   if [ "$(id -u)" != 0 ]; then
@@ -45,6 +47,10 @@ if [ -z "$VERSION" ]; then
   case "$effective" in "https://github.com/$REPOSITORY/releases/tag/"*) VERSION=${effective##*/};; *) die 'Unexpected latest-release redirect';; esac
 fi
 printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || die 'Specify an exact stable version: --version vX.Y.Z'
+if [ "$MODE" = switch-admin ]; then
+  [ "$EXECUTE" = yes ] && [ "$(id -u)" = 0 ] || die "Console switching requires root and --execute"
+  printf '%s\n' "$ADMIN_PORT" | awk '/^[0-9]+$/ && $0>=1024 && $0<=65535 {ok=1} END {exit !ok}' || die "Invalid console port"
+fi
 if [ "$WITH_ADMIN" = yes ]; then
   printf '%s\n' "$VERSION" | awk -F '[v.]' '{exit !(($2+0)>0 || ($3+0)>=6)}' || die 'Static admin requires v0.6.0 or newer'
 fi
@@ -59,7 +65,10 @@ for value in "$PREFIX" "$CONFIG_DIR" "$STATE_DIR"; do
 '*) die 'Unsafe path';; esac
 done
 ASSET="nodectl-${VERSION}-${ARCH}-unknown-linux-gnu.tar.gz"
-IDENTITY="https://github.com/$REPOSITORY/.github/workflows/release.yml@refs/tags/$VERSION"
+SIGNER=$REPOSITORY
+# These exact releases predate the repository rename. Assets use the canonical URL.
+case "$VERSION" in v0.6.[1-5]) SIGNER=reina0721/dmit-node-config;; esac
+IDENTITY="https://github.com/$SIGNER/.github/workflows/release.yml@refs/tags/$VERSION"
 printf 'Version: %s\nArchitecture: %s\nAsset: %s\nInstall: %s/bin/nodectl\nTrust: %s (GitHub OIDC)\n' "$VERSION" "$ARCH" "$ASSET" "$PREFIX" "$IDENTITY"
 [ "$EXECUTE" = yes ] || { printf '%s\n' 'Preview only; rerun with --execute. No files or downloads changed.'; exit 0; }
 for tool in curl sha256sum tar mktemp install flock sync od tr; do command -v "$tool" >/dev/null 2>&1 || die "Missing $tool; see docs/installation.md"; done
@@ -81,10 +90,27 @@ check_tree "$PREFIX/lib/nodectl/versions"
 mkdir -p "$PREFIX/bin" "$PREFIX/lib/nodectl/versions"
 exec 9>"$PREFIX/lib/nodectl/install.lock"
 flock -n 9 || die 'Another installation is running'
-work=$(mktemp -d)
+# The verifier and candidate both execute here. The host's temporary
+# filesystem may be mounted noexec; the checked installation prefix is trusted.
+work=$(mktemp -d "$PREFIX/lib/nodectl/.install-XXXXXXXX")
 stage=
-cleanup() { rm -f "${stage:-$work/unused}"; rm -rf "$work"; }
-trap cleanup EXIT HUP INT TERM
+switch_pending=no
+cleanup() {
+  result=$?
+  trap - EXIT HUP INT TERM
+  if [ "$switch_pending" = yes ]; then
+    if restore_binary && systemctl restart nodectl-admin nodectl-admin-nginx; then
+      printf '%s\n' 'Console activation failed; previous executable and services restored.' >&2
+    else
+      printf '%s\n' 'Console recovery failed; inspect the service journal and retained executable.' >&2
+    fi
+  fi
+  rm -f "${stage:-$work/unused}"
+  rm -rf "$work"
+  exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 case "$ARCH" in
   x86_64) cosign_arch=amd64; cosign_hash=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71;;
   aarch64) cosign_arch=arm64; cosign_hash=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a;;
@@ -111,7 +137,18 @@ get_asset() {
 }
 get_asset SHA256SUMS
 get_asset SHA256SUMS.sigstore.json
-"$COSIGN" verify-blob --bundle "$work/SHA256SUMS.sigstore.json" --certificate-identity "$IDENTITY" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$work/SHA256SUMS" >/dev/null 2>&1 || die 'Release signature or workflow identity verification failed'
+verify_manifest() {
+  "$COSIGN" verify-blob --bundle "$work/SHA256SUMS.sigstore.json" \
+    --certificate-identity "$IDENTITY" --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    "$work/SHA256SUMS" >/dev/null 2>&1
+}
+attempt=1
+until verify_manifest; do
+  [ "$MODE" = switch-admin ] && [ "$attempt" -lt 3 ] || die 'Release signature or workflow identity verification failed'
+  # The verifier may need to refresh the Sigstore TUF trust material.
+  attempt=$((attempt+1))
+  sleep 2
+done
 get_asset "$ASSET"
 expected=$(awk -v name="$ASSET" '$2 == name { print $1 }' "$work/SHA256SUMS")
 [ "${#expected}" = 64 ] || die 'Missing or ambiguous asset digest'
@@ -142,15 +179,45 @@ if [ -e "$dest" ] || [ -L "$dest" ]; then
   else install -m 0755 "$dest" "$backup"; sync -f "$backup"; fi
   printf 'Previous binary retained: %s\n' "$backup"
 fi
+restore_binary() {
+  [ "$(sha256sum "$dest" | cut -d ' ' -f 1)" = "$new_hash" ] || return 1
+  if [ -n "$old_hash" ]; then
+    [ "$(sha256sum "$PREFIX/lib/nodectl/versions/$old_hash" | cut -d ' ' -f 1)" = "$old_hash" ] || return 1
+    stage=$(mktemp "$PREFIX/bin/.nodectl-restore-XXXXXXXX") || return 1
+    install -m 0755 "$PREFIX/lib/nodectl/versions/$old_hash" "$stage" && sync -f "$stage" && mv -f "$stage" "$dest" || return 1
+    stage=
+  else
+    rm -f "$dest" || return 1
+  fi
+  sync -f "$PREFIX/bin"
+}
+new_hash=$(sha256sum "$work/nodectl" | cut -d ' ' -f 1)
+if [ "$MODE" = switch-admin ]; then
+  [ -n "$old_hash" ] || die 'Console switch requires an existing installed executable'
+  # The target must understand the actual applied and rollback snapshots.
+  for pointer in current previous; do
+    link=$(readlink "$STATE_DIR/$pointer" 2>/dev/null || true)
+    if [ -n "$link" ]; then
+      "$work/nodectl" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" diff "${link##*/}" >/dev/null ||
+        die "Target version cannot read the $pointer node snapshot"
+    fi
+  done
+  # Validate the matching archive and existing console before replacing the CLI.
+  "$work/nodectl" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" admin install --archive "$work/$ASSET" --port "$ADMIN_PORT" >/dev/null
+fi
 stage=$(mktemp "$PREFIX/bin/.nodectl-XXXXXXXX")
 install -m 0755 "$work/nodectl" "$stage"
 sync -f "$stage"
 mv -f "$stage" "$dest"
+if [ "$MODE" = switch-admin ]; then switch_pending=yes; fi
 sync -f "$PREFIX/bin"
 stage=
 printf 'Installed %s at %s\n' "$VERSION" "$dest"
+if [ "$MODE" = switch-admin ]; then
+  "$dest" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" admin install --archive "$work/$ASSET" --port "$ADMIN_PORT" --execute
+  switch_pending=no
+fi
 if [ "$MODE" = wizard ]; then
-  new_hash=$(sha256sum "$dest" | cut -d ' ' -f 1)
   run_wizard() {
     if [ -n "$TOKEN_FILE" ]; then
       "$dest" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" deploy --wizard --token-file "$TOKEN_FILE"
@@ -170,18 +237,7 @@ if [ "$MODE" = wizard ]; then
       fi
     fi
     [ "$(readlink "$STATE_DIR/current" 2>/dev/null || true)" = "$baseline" ] || die 'Deployment state changed; keep the compatible installed program and inspect recovery records'
-    [ "$(sha256sum "$dest" | cut -d ' ' -f 1)" = "$new_hash" ] || die 'Installed program changed; refusing automatic replacement'
-    if [ -n "$old_hash" ]; then
-      [ "$(sha256sum "$PREFIX/lib/nodectl/versions/$old_hash" | cut -d ' ' -f 1)" = "$old_hash" ] || die 'Previous program backup changed; recovery stopped'
-      stage=$(mktemp "$PREFIX/bin/.nodectl-restore-XXXXXXXX")
-      install -m 0755 "$PREFIX/lib/nodectl/versions/$old_hash" "$stage"
-      sync -f "$stage"
-      mv -f "$stage" "$dest"
-      stage=
-    else
-      rm -f "$dest"
-    fi
-    sync -f "$PREFIX/bin"
+    restore_binary || die 'Program changed or saved version could not be restored'
     printf '%s\n' 'Deployment cancelled or failed; original program and deployment preserved. Bootstrap packages may remain.' >&2
     exit "$result"
   fi

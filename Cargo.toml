@@ -1,17 +1,17 @@
 [package]
 name = "nodectl"
 default-run = "nodectl"
-version = "0.6.5"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.99.1"
-repository = "https://github.com/reina0721/dmit-node-config"
+repository = "https://github.com/reina0721/node-config-manager"
 description = "Transactional configuration management for a bare-metal Xray node"
 license = "MIT"
 
 [dependencies]
 anyhow = "1"
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "sync", "macros", "time", "io-util"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
@@ -23,6 +23,9 @@ rand = "0.8"
 regex = "1"
 percent-encoding = "2"
 unicode-general-category = "1"
+ring = "0.17"
+serde_urlencoded = "0.7"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -32,7 +35,7 @@ similar = "2"
 subtle = "2.6.1"
 tempfile = "3"
 toml = "0.8"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [features]

@@ -3,7 +3,7 @@ import { useState, lazy, Suspense } from 'react';
 const PlanReview = lazy(() => import('./plan-review'));
 import { Section } from '@community-go/surface-foundation/layout';
 import { DataTable } from '@community-go/ui-adapter/data-display';
-import { TextField, PasswordField } from '@community-go/ui-adapter/form-field';
+import { PasswordField } from '@community-go/ui-adapter/form-field';
 import { Action } from '@community-go/ui-adapter/action';
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import { AlertBanner, Badge } from '@community-go/ui-adapter/feedback';
@@ -18,12 +18,13 @@ import {
   useNodeQuery,
   useNodeText,
 } from './common';
+const VersionPanel = lazy(() => import('./version-panel'));
 export default function OperationsPage() {
   const api = useNodeManagement();
   const q = useNodeQuery(api.operations, 5000);
   const t = useNodeText();
   const [result, setResult] = useState<JobResult | null>(null);
-  const [version, setVersion] = useState('');
+  const versions = useNodeQuery(api.versions);
   const [restore, setRestore] = useState<ConfigPlan | null>(null);
   const [selected, setSelected] = useState('');
   const [token, setToken] = useState('');
@@ -34,7 +35,14 @@ export default function OperationsPage() {
     void q.refresh();
   };
   return (
-    <NodePage name="operations" loading={q.loading} error={q.error} refresh={q.refresh}>
+    <NodePage
+      name="operations"
+      loading={q.loading}
+      error={q.error}
+      refresh={async () => {
+        await Promise.all([q.refresh(), versions.refresh()]);
+      }}
+    >
       <JobProgress />
       {d?.recovery_required ? (
         <AlertBanner
@@ -95,26 +103,16 @@ export default function OperationsPage() {
           />
         </div>
       </Section>
-      <Section
-        title={t('operations.upgrade')}
-        description={t('operations.upgradeRisk')}
-        contentInset
-      >
-        <div className="grid gap-4">
-          <TextField
-            label={t('operations.upgradeVersion')}
-            value={version}
-            onChange={(e) => setVersion(e.target.value)}
-          />
-          <OperationButton
-            label={t('operations.upgrade')}
-            risk={t('operations.upgradeRisk')}
-            input={{ operation: 'upgrade', version }}
-            disabled={!/^v?\d+\.\d+\.\d+$/.test(version)}
-            onResult={done}
-          />
-        </div>
-      </Section>
+      <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+        <VersionPanel
+          data={versions.data}
+          error={versions.error}
+          onResult={(result) => {
+            done(result);
+            void versions.refresh();
+          }}
+        />
+      </Suspense>
       <TaskResult result={result} />
       {restore ? (
         <Suspense fallback={<p role="status">{t('common.loading')}</p>}>

@@ -333,6 +333,10 @@ pub fn run(store: &Store, action: Action) -> Result<()> {
 /// Caller must hold a shared store lock until the response is sent. This check
 /// deliberately uses success, not checks: a checked candidate is not deployed.
 pub fn current_clients(store: &Store, format: &str) -> Result<(String, Vec<u8>)> {
+    ensure!(
+        !crate::proxy_access::enabled(store)?,
+        "Shared profiles are disabled while device authentication is enabled"
+    );
     for journal in ["deployment.json", "transaction.json", "uninstall.json"] {
         ensure!(
             !store.state_dir.join(journal).exists(),

@@ -18,9 +18,12 @@
 | regex | 1.13.1 | MIT OR Apache-2.0 | [source](https://github.com/rust-lang/regex) |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | [source](https://github.com/servo/rust-url) |
 | unicode-general-category | 1.1.0 | Apache-2.0 | [source](https://github.com/yeslogic/unicode-general-category) |
+| ring | 0.17.14 | Apache-2.0 AND ISC | [source](https://github.com/briansmith/ring) |
+| tokio-rustls | 0.26.6 | MIT OR Apache-2.0 | [source](https://github.com/rustls/tokio-rustls) |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT | [source](https://github.com/rustls/rustls) |
 | schemars | 0.8.22 | MIT | [source](https://github.com/GREsau/schemars) |
 | serde | 1.0.229 | MIT OR Apache-2.0 | [source](https://github.com/serde-rs/serde) |
+| serde_urlencoded | 0.7.1 | MIT OR Apache-2.0 | [source](https://github.com/nox/serde_urlencoded) |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 | [source](https://github.com/serde-rs/json) |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | [source](https://github.com/RustCrypto/hashes) |
 | similar | 2.7.0 | Apache-2.0 | [source](https://github.com/mitsuhiko/similar) |
