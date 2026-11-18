@@ -10,7 +10,10 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
-use ring::pbkdf2::{self, PBKDF2_HMAC_SHA256};
+use ring::{
+    hmac,
+    pbkdf2::{self, PBKDF2_HMAC_SHA256},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -20,6 +23,7 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::PathBuf,
 };
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 pub use runtime::{launch, prepare, reserved_port, serve};
@@ -477,16 +481,87 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
 pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {
     let _host = store.lock()?;
     let current = store.pointer("current")?.context("not_deployed")?;
-    let (config, mut secrets) = store.verify(&current)?;
+    let (config, secrets) = store.verify(&current)?;
     let data = Access(store).read()?.context("not_found")?;
-    ensure!(data.devices.contains_key(&id), "not_found");
+    let device = data.devices.get(&id).context("not_found")?;
+    if format == "subscriptions" {
+        ensure!(data.enabled && config.distributes(), "not_found");
+        let key = crate::share::device_key(store)?;
+        let token = subscription_token(&key, id, device);
+        let port = config.ports.https;
+        let domain = &config.node.domain;
+        let origin = if port == 443 {
+            format!("https://{domain}")
+        } else {
+            format!("https://{domain}:{port}")
+        };
+        return Ok(serde_json::to_string_pretty(&json!({
+            "token": token,
+            "node_page": format!("{origin}/nodes/"),
+            "mihomo": format!("{origin}/nodes/sub/mihomo?token={token}"),
+            "xray": format!("{origin}/nodes/sub/xray?token={token}"),
+            "browser_login": runtime::portal(&config),
+        }))?);
+    }
+    Ok(String::from_utf8(render_profile(
+        &config, secrets, id, format,
+    )?)?)
+}
+
+fn subscription_token(key: &hmac::Key, id: Uuid, device: &Device) -> String {
+    let mut mac = hmac::Context::with_key(key);
+    mac.update(b"nodectl-device-subscription-v1");
+    mac.update(id.as_bytes());
+    mac.update(device.portal.as_bytes());
+    let tag = mac.sign();
+    format!(
+        "{}{suffix}",
+        id.simple(),
+        suffix = hex::encode(&tag.as_ref()[..16])
+    )
+}
+
+pub(crate) fn subscription_device(store: &Store, token: &str) -> Result<Option<Uuid>> {
+    let mut raw = [0; 32];
+    if hex::decode_to_slice(token, &mut raw).is_err() {
+        return Ok(None);
+    }
+    let id = Uuid::from_slice(&raw[..16])?;
+    let Some(data) = Access(store).read()?.filter(|data| data.enabled) else {
+        return Ok(None);
+    };
+    let Some(device) = data
+        .devices
+        .get(&id)
+        .filter(|d| data.users.contains_key(&d.username))
+    else {
+        return Ok(None);
+    };
+    let Ok(key) = crate::share::device_key(store) else {
+        return Ok(None);
+    };
+    Ok(bool::from(
+        subscription_token(&key, id, device)
+            .as_bytes()
+            .ct_eq(token.as_bytes()),
+    )
+    .then_some(id))
+}
+
+pub(crate) fn render_profile(
+    config: &crate::config::Config,
+    mut secrets: crate::config::Secrets,
+    id: Uuid,
+    format: &str,
+) -> Result<Vec<u8>> {
     secrets.xhttp_uuid = id.to_string();
     secrets.ws_uuid = id.to_string();
     secrets.reality_uuid = id.to_string();
-    let bytes = match format {
-        "xray" => serde_json::to_vec_pretty(&crate::render::profiles(&config, &secrets)?)?,
-        "mihomo" => crate::render::mihomo(&config, &secrets)?,
+    match format {
+        "xray" => Ok(serde_json::to_vec_pretty(&crate::render::profiles(
+            config, &secrets,
+        )?)?),
+        "mihomo" => crate::render::mihomo(config, &secrets),
         _ => anyhow::bail!("bad_request"),
-    };
-    Ok(String::from_utf8(bytes)?)
+    }
 }

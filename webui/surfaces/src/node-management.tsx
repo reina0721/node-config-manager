@@ -33,7 +33,10 @@ export type NodeManagementPort = Readonly<{
   changeProxyAccess: (input: ProxyAccessChange) => Promise<ProxyAccess>;
   downloadProxyUsers: () => Promise<void>;
   importProxyUsers: () => Promise<ProxyAccess | null>;
-  downloadProxyProfile: (device: string, format: 'xray' | 'mihomo') => Promise<void>;
+  downloadProxyProfile: (
+    device: string,
+    format: 'xray' | 'mihomo' | 'subscriptions',
+  ) => Promise<void>;
   unlock: (token: string) => Promise<string>;
   preview: (config: NodeConfiguration, unlock?: string) => Promise<ConfigPlan>;
   restoreBackup: (backup: string, token: string) => Promise<ConfigPlan>;

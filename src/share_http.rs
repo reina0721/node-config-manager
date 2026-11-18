@@ -186,15 +186,23 @@ fn route(
     if fs2::FileExt::try_lock_shared(&lock).is_err() {
         return error(stream, 503);
     }
-    if !share::authorized(store, token) {
-        return error(stream, 401);
-    }
+    let device = if crate::proxy_access::enabled(store)? {
+        let Some(device) = crate::proxy_access::subscription_device(store, token)? else {
+            return error(stream, 401);
+        };
+        Some(device)
+    } else {
+        if !share::authorized(store, token) {
+            return error(stream, 401);
+        }
+        None
+    };
     let format = if path.ends_with("mihomo") {
         "mihomo"
     } else {
         "xray"
     };
-    let Ok((id, bytes)) = share::current_clients(store, format) else {
+    let Ok((id, bytes)) = share::subscription_profiles(store, format, device) else {
         return error(stream, 503);
     };
     if path == "/nodes/api" {

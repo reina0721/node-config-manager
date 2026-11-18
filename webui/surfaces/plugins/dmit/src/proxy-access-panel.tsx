@@ -15,12 +15,14 @@ import { Details, Timestamp, useNodeText } from './common';
 
 type User = ProxyAccess['users'][number];
 type NewUser = Extract<ProxyAccessChange, { action: 'create' }>['users'][number];
+type DeviceFormat = 'xray' | 'mihomo' | 'subscriptions';
 type Confirm = Readonly<{ label: string; description: string; change: ProxyAccessChange }>;
 
 export default function ProxyAccessPanel({
   data,
+  subscriptions,
   refresh,
-}: Readonly<{ data: ProxyAccess; refresh: () => Promise<void> }>) {
+}: Readonly<{ data: ProxyAccess; subscriptions: boolean; refresh: () => Promise<void> }>) {
   const api = useNodeManagement();
   const t = useNodeText();
   const [ttl, setTtl] = useState<string>();
@@ -225,6 +227,7 @@ export default function ProxyAccessPanel({
           download={(id, format) => {
             void perform(() => api.downloadProxyProfile(id, format), false);
           }}
+          subscriptions={data.enabled && subscriptions}
           queue={(entry) =>
             setBulk((items) => [...items.filter((item) => item.username !== entry.username), entry])
           }
@@ -295,6 +298,7 @@ function UserEditor({
   onDelete,
   onDeviceDelete,
   download,
+  subscriptions,
   queue,
   queueFull,
 }: Readonly<{
@@ -304,7 +308,8 @@ function UserEditor({
   onNew: () => void;
   onDelete: () => void;
   onDeviceDelete: (id: string) => void;
-  download: (id: string, format: 'xray' | 'mihomo') => void;
+  download: (id: string, format: DeviceFormat) => void;
+  subscriptions: boolean;
   queue: (entry: NewUser) => void;
   queueFull: boolean;
 }>) {
@@ -451,6 +456,15 @@ function UserEditor({
                     >
                       {t('nodes.xray')}
                     </Action>
+                    {subscriptions ? (
+                      <Action
+                        variant="secondary"
+                        disabled={busy}
+                        onPress={() => download(row.id, 'subscriptions')}
+                      >
+                        {t('access.downloadSubscriptions')}
+                      </Action>
+                    ) : null}
                     <Action
                       variant="secondary"
                       disabled={busy}

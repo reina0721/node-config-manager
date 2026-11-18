@@ -238,7 +238,7 @@ impl Store {
                         && (manifest.generator_version == env!("CARGO_PKG_VERSION")
                             || [
                                 "0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "0.6.4",
-                                "0.6.5", "0.7.0"
+                                "0.6.5", "0.7.0", "0.7.1"
                             ]
                             .contains(&manifest.generator_version.as_str())))),
             "Release requires its original nodectl/template version"

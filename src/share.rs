@@ -172,12 +172,25 @@ pub fn authorized(store: &Store, token: &str) -> bool {
         )
 }
 
+pub(crate) fn device_key(store: &Store) -> Result<ring::hmac::Key> {
+    let record = read(store)?;
+    ensure!(!record.revoked, "Subscription access is revoked");
+    Ok(ring::hmac::Key::new(
+        ring::hmac::HMAC_SHA256,
+        record.token.as_bytes(),
+    ))
+}
+
 fn reveal(store: &Store) -> Result<()> {
     let record = read(store)?;
     ensure!(
         !record.revoked,
         "Access is revoked; use nodectl share rotate to restore it"
     );
+    if crate::proxy_access::enabled(store)? {
+        println!("Use the administrator console's device list to download device subscriptions.");
+        return Ok(());
+    }
     #[cfg(unix)]
     {
         // A redirected stdout, CI log or deployment report never receives this.
@@ -229,6 +242,12 @@ pub(crate) fn deployment_result(store: &Store) -> Result<()> {
     } else {
         format!("https://{}:{}", c.node.domain, c.ports.https)
     };
+    if crate::proxy_access::enabled(store)? {
+        println!(
+            "Node page: {origin}/nodes/\nDownload per-device subscriptions in the administrator console."
+        );
+        return Ok(());
+    }
     println!(
         "Node page: {origin}/nodes/\nSubscription templates (replace locally; keep private):\n  {origin}/nodes/sub/mihomo?token=<ACCESS_TOKEN>\n  {origin}/nodes/sub/xray?token=<ACCESS_TOKEN>\nFormats: Mihomo provider and Xray outbound profiles\nProtected access credential: {}\nRecover access: nodectl share reveal\nRotate: nodectl share rotate\nRevoke: nodectl share revoke",
         credential_path(store).display()
@@ -337,6 +356,14 @@ pub fn current_clients(store: &Store, format: &str) -> Result<(String, Vec<u8>)>
         !crate::proxy_access::enabled(store)?,
         "Shared profiles are disabled while device authentication is enabled"
     );
+    subscription_profiles(store, format, None)
+}
+
+pub(crate) fn subscription_profiles(
+    store: &Store,
+    format: &str,
+    device: Option<uuid::Uuid>,
+) -> Result<(String, Vec<u8>)> {
     for journal in ["deployment.json", "transaction.json", "uninstall.json"] {
         ensure!(
             !store.state_dir.join(journal).exists(),
@@ -359,6 +386,12 @@ pub fn current_clients(store: &Store, format: &str) -> Result<(String, Vec<u8>)>
         c.distributes(),
         "Distribution is disabled for this successful deployment"
     );
+    if let Some(device) = device {
+        return Ok((
+            id,
+            crate::proxy_access::render_profile(&c, s, device, format)?,
+        ));
+    }
     let bytes = match format {
         "xray" => fs::read(store.release(&id)?.join("clients/profiles.json"))?,
         "mihomo" => crate::render::mihomo(&c, &s)?,

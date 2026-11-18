@@ -241,6 +241,7 @@ const zh = {
     deviceHint: '启用认证后，登记新设备会短暂重启 Xray。',
     createDevice: '登记设备',
     deleteDevice: '撤销设备',
+    downloadSubscriptions: '下载此设备的订阅地址',
     deviceRisk: '此设备配置会立即失效。',
     noDevices: '该用户还没有设备配置',
     expiry: '认证到期',

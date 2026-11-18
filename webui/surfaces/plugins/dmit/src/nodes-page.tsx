@@ -102,7 +102,11 @@ export default function NodesPage() {
       ) : null}
       {access.data ? (
         <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
-          <ProxyAccessPanel data={access.data} refresh={access.refresh} />
+          <ProxyAccessPanel
+            data={access.data}
+            subscriptions={q.data?.distribution_enabled === true}
+            refresh={access.refresh}
+          />
         </Suspense>
       ) : null}
       {access.data?.enabled === false ? (

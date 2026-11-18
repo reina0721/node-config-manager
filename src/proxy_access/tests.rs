@@ -71,6 +71,83 @@ fn device_profiles_can_be_issued_before_enabling_access() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn subscriptions_follow_the_device_and_are_revoked_without_disabling_the_service() -> Result<()> {
+    let (_tmp, store) = crate::tests::sandbox();
+    drop(store.lock()?);
+    let (mut c, _) = store.inputs()?;
+    c.distribution = Some(crate::config::Distribution { enabled: true });
+    store::atomic_write(
+        &store.config_dir.join("node.toml"),
+        toml::to_string_pretty(&c)?.as_bytes(),
+    )?;
+    let current = store.render()?;
+    store.set_pointer("current", Some(&current))?;
+    let success = store.state_dir.join("success");
+    store::private_dir(&success)?;
+    store::atomic_write(
+        &success.join(&current),
+        &serde_json::to_vec(&json!({"release":current}))?,
+    )?;
+    crate::share::rotate(&store, None)?;
+    let access = Access(&store);
+    let guard = access.lock()?;
+    let mut db = Database {
+        enabled: true,
+        ..Default::default()
+    };
+    db.add_users(vec![("alice", "test-password", 2)])?;
+    let id = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    db.devices.insert(id, device());
+    db.devices.insert(second, device());
+    access.write(&db)?;
+    drop(guard);
+
+    let token = |id| -> Result<String> {
+        let data: Value = serde_json::from_str(&profile(&store, id, "subscriptions")?)?;
+        Ok(data["token"].as_str().context("subscription token")?.into())
+    };
+    let get = |path: &str, token: &str| -> Result<String> {
+        let request = format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n");
+        let mut exchange = std::io::Cursor::new(request.as_bytes().to_vec());
+        crate::share_http::connection(&store, &mut exchange)?;
+        Ok(String::from_utf8(
+            exchange.into_inner().split_off(request.len()),
+        )?)
+    };
+    let first = token(id)?;
+    let second_token = token(second)?;
+    for format in ["xray", "mihomo"] {
+        let response = get(&format!("/nodes/sub/{format}"), &first)?;
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert_eq!(
+            response.split_once("\r\n\r\n").unwrap().1,
+            profile(&store, id, format)?
+        );
+        assert!(!response.contains(&second.to_string()));
+        assert!(!response.contains(&db.devices[&id].portal.to_string()));
+    }
+    assert!(get("/nodes/api", &second_token)?.contains(&second.to_string()));
+    assert!(get("/nodes/api", &first[32..].repeat(2))?.starts_with("HTTP/1.1 401"));
+    crate::share::rotate(&store, None)?;
+    assert!(get("/nodes/api", &first)?.starts_with("HTTP/1.1 401"));
+    let fresh = token(id)?;
+    assert!(get("/nodes/api", &fresh)?.starts_with("HTTP/1.1 200"));
+    let guard = access.lock()?;
+    db.devices.remove(&id);
+    access.write(&db)?;
+    drop(guard);
+    assert!(get("/nodes/api", &fresh)?.starts_with("HTTP/1.1 401"));
+    let unaffected = token(second)?;
+    assert!(get("/nodes/api", &unaffected)?.starts_with("HTTP/1.1 200"));
+    crate::share::revoke(&store)?;
+    assert!(get("/nodes/api", &unaffected)?.starts_with("HTTP/1.1 401"));
+    assert!(get("/nodes/", "")?.starts_with("HTTP/1.1 200"));
+    assert!(enabled(&store)?);
+    Ok(())
+}
+
 struct FixtureProcess(Child);
 impl Drop for FixtureProcess {
     fn drop(&mut self) {

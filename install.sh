@@ -96,8 +96,12 @@ work=$(mktemp -d "$PREFIX/lib/nodectl/.install-XXXXXXXX")
 stage=
 switch_pending=no
 restart_proxy=no
-restart_proxy_service() {
-  [ "$restart_proxy" = no ] || systemctl restart nodectl-proxy-access
+restart_share=no
+restart_managed_backends() {
+  result_backends=0
+  if [ "$restart_proxy" = yes ]; then systemctl restart nodectl-proxy-access || result_backends=1; fi
+  if [ "$restart_share" = yes ]; then systemctl restart nodectl-share || result_backends=1; fi
+  return "$result_backends"
 }
 cleanup() {
   result=$?
@@ -106,7 +110,7 @@ cleanup() {
     recovered=no
     if restore_binary; then
       recovered=yes
-      restart_proxy_service || recovered=no
+      restart_managed_backends || recovered=no
       systemctl restart nodectl-admin nodectl-admin-nginx || recovered=no
     fi
     if [ "$recovered" = yes ]; then
@@ -214,8 +218,9 @@ if [ "$MODE" = switch-admin ]; then
   done
   # Validate the matching archive and existing console before replacing the CLI.
   "$work/nodectl" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" admin install --archive "$work/$ASSET" --port "$ADMIN_PORT" >/dev/null
-  if [ "$old_hash" != "$new_hash" ] && systemctl is-enabled --quiet nodectl-proxy-access; then
-    restart_proxy=yes
+  if [ "$old_hash" != "$new_hash" ]; then
+    if systemctl is-enabled --quiet nodectl-proxy-access; then restart_proxy=yes; fi
+    if systemctl is-enabled --quiet nodectl-share; then restart_share=yes; fi
   fi
 fi
 stage=$(mktemp "$PREFIX/bin/.nodectl-XXXXXXXX")
@@ -227,7 +232,7 @@ sync -f "$PREFIX/bin"
 stage=
 printf 'Installed %s at %s\n' "$VERSION" "$dest"
 if [ "$MODE" = switch-admin ]; then
-  restart_proxy_service
+  restart_managed_backends
   "$dest" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" admin install --archive "$work/$ASSET" --port "$ADMIN_PORT" --execute
   switch_pending=no
 fi

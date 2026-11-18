@@ -109,7 +109,11 @@ export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJ
         'proxy-access/profile/' + encodeURIComponent(device) + '/' + format,
         z.object({ content: z.string() }),
       );
-      downloadClients(format, content);
+      if (format === 'subscriptions') {
+        download('nodectl-device-subscriptions.json', 'application/json', content);
+      } else {
+        downloadClients(format, content);
+      }
     },
     overview: () => request('overview', overviewSchema),
     configuration: () => request('config', configurationViewSchema),

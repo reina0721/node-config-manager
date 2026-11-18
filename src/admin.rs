@@ -1269,6 +1269,11 @@ impl App {
             }
             "subscription-rotate" => {
                 crate::share::rotate(&self.store, None)?;
+                if crate::proxy_access::enabled(&self.store)? {
+                    return Ok(
+                        json!({"message":"旧订阅地址已失效。请在设备列表重新下载订阅地址。"}),
+                    );
+                }
                 let p = crate::share::credential_path(&self.store);
                 let v: Value = serde_json::from_slice(&fs::read(p)?)?;
                 Ok(
