@@ -113,6 +113,7 @@ pub(crate) fn preview_secrets() -> Secrets {
         reality_private_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc".into(),
         reality_short_id: "0123456789abcdef".into(),
         vless: None,
+        upstreams: Default::default(),
     }
 }
 fn prompt(label: &str, default: &str) -> Result<String> {
@@ -1564,7 +1565,12 @@ pub fn run(store: &Store, mut args: Deploy) -> Result<()> {
     }
     Ok(())
 }
-fn restore(store: &Store, journal: &Journal, cf: Option<&Cloudflare>, delete_new_dns: bool) -> Result<()> {
+fn restore(
+    store: &Store,
+    journal: &Journal,
+    cf: Option<&Cloudflare>,
+    delete_new_dns: bool,
+) -> Result<()> {
     ensure!(
         journal
             .backup

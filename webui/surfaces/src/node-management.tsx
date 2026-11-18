@@ -3,6 +3,7 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import type {
   ConfigurationView,
+  CatalogueEdit,
   ConfigPlan,
   DnsView,
   JobResult,
@@ -17,6 +18,13 @@ import type {
   ProvisionOptions,
   ProxyAccess,
   ProxyAccessChange,
+  RoutingQuery,
+  RoutingMatch,
+  Fleet,
+  PeerRegistration,
+  PeerGrant,
+  PanelSettings,
+  XrayView,
   VersionsView,
 } from './node-model';
 export * from './node-model';
@@ -40,6 +48,18 @@ export type NodeManagementPort = Readonly<{
   ) => Promise<void>;
   unlock: (token: string) => Promise<string>;
   preview: (config: NodeConfiguration, unlock?: string) => Promise<ConfigPlan>;
+  previewCatalogue: (edit: CatalogueEdit, base: string) => Promise<ConfigPlan>;
+  matchRoute: (input: RoutingQuery) => Promise<RoutingMatch>;
+  testUpstream: (id: string) => Promise<JobResult>;
+  fleet: () => Promise<Fleet>;
+  registerPeer: (registration: PeerRegistration) => Promise<void>;
+  grantPeer: (grant: PeerGrant) => Promise<string>;
+  removePeer: (id: string, grant: boolean) => Promise<void>;
+  selectNode: (id: string, name: string) => void;
+  selectedNode: { id: string; name: string };
+  panel: () => Promise<PanelSettings>;
+  xray: () => Promise<XrayView>;
+  openApi: () => Promise<Record<string, unknown>>;
   restoreBackup: (backup: string, token: string) => Promise<ConfigPlan>;
   check: (plan: string) => Promise<JobResult>;
   prepareDeployment: (plan: string, options: ProvisionOptions) => Promise<JobResult>;

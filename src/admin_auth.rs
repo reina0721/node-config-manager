@@ -11,6 +11,9 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 
+pub const SESSION_LIFETIME: u64 = 28_800;
+pub const SESSION_IDLE_TIMEOUT: u64 = 900;
+
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -107,7 +110,8 @@ impl Auth {
         ensure!(verify(s, token), "unauthorized");
         let time = now();
         self.sessions.retain(|_, v| {
-            time.saturating_sub(v.born) < 28800 && time.saturating_sub(v.seen) < 900
+            time.saturating_sub(v.born) < SESSION_LIFETIME
+                && time.saturating_sub(v.seen) < SESSION_IDLE_TIMEOUT
         });
         if self.sessions.len() >= 5 {
             let key = self
@@ -139,8 +143,8 @@ impl Auth {
         let current = generation(s)?;
         self.sessions.retain(|_, v| {
             v.generation == current
-                && time.saturating_sub(v.born) < 28800
-                && time.saturating_sub(v.seen) < 900
+                && time.saturating_sub(v.born) < SESSION_LIFETIME
+                && time.saturating_sub(v.seen) < SESSION_IDLE_TIMEOUT
         });
         let v = self
             .sessions

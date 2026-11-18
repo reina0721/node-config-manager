@@ -256,16 +256,18 @@ fn load_jobs(store: &Store) -> Result<BTreeMap<String, Job>> {
         })
         .collect())
 }
-fn redact_log(store: &Store, mut text: String) -> Result<String> {
-    let (_, secrets) = store.inputs()?;
+fn redact_log(store: &Store, text: String) -> Result<String> {
+    let (config, secrets) = store.inputs()?;
     let mut sensitive = secrets
         .sensitive()
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    sensitive.extend(crate::catalogue::redactions(&config, &secrets));
     if let Some(previous) = store.pointer("previous")? {
-        let (_, secrets) = store.verify(&previous)?;
+        let (config, secrets) = store.verify(&previous)?;
         sensitive.extend(secrets.sensitive().into_iter().map(str::to_owned));
+        sensitive.extend(crate::catalogue::redactions(&config, &secrets));
     }
     let token = store.config_dir.join("credentials/cloudflare-token");
     if token.exists() {
@@ -273,11 +275,7 @@ fn redact_log(store: &Store, mut text: String) -> Result<String> {
         ensure!(fs::metadata(&token)?.len() <= 4096, "Credential size");
         sensitive.push(fs::read_to_string(token)?.trim().into());
     }
-    for secret in sensitive {
-        if !secret.is_empty() {
-            text = text.replace(&secret, "<redacted>");
-        }
-    }
+    let text = store::redact_text(text, &sensitive);
     Ok(regex::Regex::new(r"(?i)[a-z0-9_+/=-]{32,}")?
         .replace_all(&text, "<redacted>")
         .into_owned())
@@ -364,9 +362,16 @@ async fn handle(
                 | "invalid_proxy_device_limit"
                 | "invalid_proxy_batch"
                 | "invalid_proxy_device"
+                | "invalid_proxy_quota"
+                | "invalid_proxy_expiry"
+                | "managed_inbounds_require_proxy_access"
+                | "policies_require_proxy_access"
+                | "peer_scope_denied"
+                | "peer_unavailable"
                 | "proxy_user_exists"
                 | "version_switch_pending"
-                | "version_auth_incompatible" => error.as_str(),
+                | "version_auth_incompatible"
+                | "version_management_incompatible" => error.as_str(),
                 _ => "operation_failed",
             };
             let _ = audit.audit("request-denied", code, None);
@@ -379,6 +384,7 @@ async fn handle(
                 | "protected_field"
                 | "immutable_platform_boundary"
                 | "advanced_unlock_required" => 403,
+                "peer_scope_denied" => 403,
                 "not_found" | "not_deployed" => 404,
                 "method_not_allowed" => 405,
                 "stale_plan" | "operation_busy" | "check_required" => 409,
@@ -416,9 +422,16 @@ fn remedy(code: &str) -> &str {
         "invalid_proxy_device_limit" => "设备上限应为 1–32 台。",
         "invalid_proxy_batch" => "批量新建或导入支持每次 1–50 个账号。",
         "invalid_proxy_device" => "请检查设备名称或已登记设备数。",
+        "invalid_proxy_quota" => "流量配额须大于零，留空表示不限额。",
+        "invalid_proxy_expiry" => "请检查账号到期时间。",
+        "managed_inbounds_require_proxy_access" => "启用附加入站或主机前，请启用浏览器认证。",
+        "policies_require_proxy_access" => "客户端限制需要启用浏览器认证。",
+        "peer_scope_denied" => "配对授权不包含此操作。",
+        "peer_unavailable" => "无法确认远端响应。请检查节点连接和任务记录后再重试。",
         "proxy_user_exists" => "用户名重复或已经存在。",
         "version_switch_pending" => "正在切换 nodectl 版本，请稍候。",
-        "version_auth_incompatible" => "启用浏览器认证时可切换到 v0.7.0 或更高版本。",
+        "version_auth_incompatible" => "启用浏览器认证时可切换到 v0.7.1 或更高版本。",
+        "version_management_incompatible" => "目标版本无法执行当前账号限制或读取管理配置快照。",
         "unauthorized" => "会话失效或 Token 不正确，请重新登录。",
         "reauth_denied" => "管理员 Token 重新认证失败，请检查后重试；当前会话仍有效。",
         "rate_limited" => "登录尝试过于频繁，请等待一分钟。",
@@ -527,17 +540,32 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
             "__Host-nodectl_admin"
         };
         return Ok((
-            json!({"csrf":csrf,"expires_in":28800,"idle_timeout":900}),
+            json!({"csrf":csrf,"expires_in":auth::SESSION_LIFETIME,"idle_timeout":auth::SESSION_IDLE_TIMEOUT}),
             Some(format!(
-                "{name}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800{}",
+                "{name}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
+                auth::SESSION_LIFETIME,
                 if app.development { "" } else { "; Secure" }
             )),
         ));
     }
-    let id = cookie(h, app.development)?;
-    let owner = store::digest(id.as_bytes());
     let csrf = text(h, "x-csrf-token")?;
-    {
+    let mut id = String::new();
+    let owner;
+    let (path, from_peer) = if let Some(path) = path.strip_prefix("peer/") {
+        ensure!(!app.development, "unauthorized");
+        owner = crate::fleet::authenticate(
+            &app.store,
+            text(h, "authorization")?.context("unauthorized")?,
+            path,
+            post,
+        )?;
+        if post {
+            app.audit("peer-write", path, Some(&owner))?;
+        }
+        (path, true)
+    } else {
+        id = cookie(h, app.development)?;
+        owner = store::digest(id.as_bytes());
         let mut auth = app.auth.lock().unwrap();
         auth.session(
             &app.store,
@@ -548,6 +576,15 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
                 None
             },
         )?;
+        (path, false)
+    };
+    if let Some(node) = text(h, "x-nodectl-node")? {
+        ensure!(!from_peer && path != "session", "peer_scope_denied");
+        let id: uuid::Uuid = node.parse().map_err(|_| anyhow::anyhow!("bad_request"))?;
+        return Ok((
+            crate::fleet::forward(&app.store, id, path, post, body)?,
+            None,
+        ));
     }
     if !post {
         let value = match path {
@@ -556,6 +593,10 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
                 json!({"csrf":a.session(&app.store,&id,None)?.csrf,"safe_mode":true})
             }
             "overview" => read::overview(&app.store, &mut app.meter.lock().unwrap()),
+            "fleet" => crate::fleet::list(&app.store)?,
+            "panel" => crate::admin_docs::panel(&app.store)?,
+            "xray" => crate::admin_docs::xray(&app.store)?,
+            "openapi" => crate::admin_docs::openapi(),
             "config" => {
                 let (c, _) = app.store.inputs()?;
                 json!({"config":c,"assets":policy::ASSETS,"base":policy::fingerprint(&app.store)?,"safe_mode":true})
@@ -645,10 +686,33 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
             app.audit("advanced-unlock", "success", None)?;
             json!({"unlock":ticket,"expires_in":300,"risk":"平台参数变更可能中断 TLS、REALITY、订阅或出口。必须审阅原值、差异并二次确认；不可绕过 DMIT 不变量。"})
         }
+        "fleet/register" | "fleet/grant" | "fleet/remove" => {
+            ensure!(
+                !app.development && !app.busy.load(Ordering::SeqCst),
+                "operation_busy"
+            );
+            let result = match path {
+                "fleet/register" => crate::fleet::register(&app.store, decode(body)?)?,
+                "fleet/grant" => crate::fleet::grant(&app.store, decode(body)?)?,
+                _ => {
+                    #[derive(Deserialize)]
+                    #[serde(deny_unknown_fields)]
+                    struct Remove {
+                        id: uuid::Uuid,
+                        grant: bool,
+                    }
+                    let input: Remove = decode(body)?;
+                    crate::fleet::remove(&app.store, input.id, input.grant)?
+                }
+            };
+            app.audit(path, "success", None)?;
+            result
+        }
         "config/preview" => {
             ensure!(!app.busy.load(Ordering::SeqCst), "operation_busy");
             let input: Preview = decode(body)?;
             let advanced = if let Some(ticket) = &input.unlock {
+                ensure!(!from_peer, "peer_scope_denied");
                 let mut a = app.auth.lock().unwrap();
                 let s = a.session(&app.store, &id, csrf)?;
                 let grant = s.unlock.take().context("advanced_unlock_required")?;
@@ -661,6 +725,52 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
                 false
             };
             app.preview(input.config, owner, advanced)?
+        }
+        "catalogue/preview" => {
+            ensure!(!app.busy.load(Ordering::SeqCst), "operation_busy");
+            #[derive(Deserialize)]
+            struct CataloguePreview {
+                base: Option<String>,
+                #[serde(flatten)]
+                edit: crate::catalogue::Edit,
+            }
+            let input: CataloguePreview = decode(body)?;
+            let _guard = app.store.lock()?;
+            if let Some(base) = input.base {
+                ensure!(base == policy::fingerprint(&app.store)?, "stale_plan");
+            }
+            let (old, existing) = app.store.inputs()?;
+            let mut candidate = old.clone();
+            let mut secret_candidate = existing.clone();
+            let changed = input.edit.apply(&mut candidate, &mut secret_candidate)?;
+            app.preview_locked(
+                &old,
+                existing,
+                candidate,
+                owner,
+                false,
+                changed.then_some(secret_candidate),
+            )?
+        }
+        "routing/match" => {
+            let query: crate::egress::Destination = decode(body)?;
+            let _guard = app.store.lock()?;
+            let id = app.store.pointer("current")?.context("not_deployed")?;
+            crate::egress::preview(&app.store.verify(&id)?.0, query)?
+        }
+        "outbounds/test" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Upstream {
+                id: uuid::Uuid,
+            }
+            let input: Upstream = decode(body)?;
+            let job = app.start("outbound-test", move |app, job| {
+                app.phase(job, "checking-upstream");
+                host::test_upstream(&app.store, input.id)?;
+                Ok(json!({"message":"出站 HTTPS 探测通过。"}))
+            })?;
+            json!({"job":job})
         }
         "config/check" | "config/apply" => {
             let input: Approval = decode(body)?;
@@ -753,6 +863,21 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
         }
         "operations" => {
             let input: Operation = decode(body)?;
+            if from_peer {
+                ensure!(
+                    matches!(
+                        input.operation.as_str(),
+                        "doctor"
+                            | "logs"
+                            | "backup"
+                            | "rollback"
+                            | "recover"
+                            | "service-restart"
+                            | "service-reload"
+                    ),
+                    "peer_scope_denied"
+                );
+            }
             ensure!(input.confirm == input.operation, "confirmation_required");
             app.validate_operation(&input)?;
             let op = input.operation.clone();
@@ -884,13 +1009,26 @@ impl App {
     ) -> Result<Value> {
         let _guard = self.store.lock()?;
         let (old, existing) = self.store.inputs()?;
+        self.preview_locked(&old, existing, candidate, owner, advanced, restore_secrets)
+    }
+
+    fn preview_locked(
+        &self,
+        old: &Config,
+        existing: config::Secrets,
+        candidate: Config,
+        owner: String,
+        advanced: bool,
+        restore_secrets: Option<config::Secrets>,
+    ) -> Result<Value> {
         let secrets = restore_secrets.as_ref().unwrap_or(&existing);
         config::validate(&candidate, secrets)?;
-        let mut changes = policy::enforce(&old, &candidate, advanced)?;
-        let restores_identity = restore_secrets.is_some();
+        let mut changes = policy::enforce(old, &candidate, advanced)?;
+        let restores_identity = advanced && restore_secrets.is_some();
         if restores_identity {
-            ensure!(advanced, "advanced_unlock_required");
             changes.push(json!({"field":"secrets","before":"<redacted>","after":"<restored from protected snapshot>","protected":true}));
+        } else if restore_secrets.is_some() {
+            changes.push(json!({"field":"upstream credentials","before":"<redacted>","after":"<changed>","protected":true}));
         }
         {
             let mut plans = self.plans.lock().unwrap();
@@ -911,7 +1049,14 @@ impl App {
                             w.librespeed_port,
                             w.openlist_port
                         ]
-                        .contains(&port)),
+                        .contains(&port))
+                        && !candidate
+                            .management
+                            .as_ref()
+                            .is_some_and(|catalogue| catalogue
+                                .inbounds
+                                .values()
+                                .any(|inbound| inbound.port == port)),
                     "reserved_port"
                 );
             }

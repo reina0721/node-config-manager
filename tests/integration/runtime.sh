@@ -7,7 +7,7 @@ bash tests/integration/prepare.sh
 probe=$!
 trap 'kill "$probe" 2>/dev/null || true' EXIT
 check() {
-  nodectl check "$1" --client /usr/local/bin/xray --client-sha256 "$(sha256sum /usr/local/bin/xray | cut -d ' ' -f 1)" --client-version 26.10.10 --probe-url https://127.0.0.1:9443/ >/dev/null
+  nodectl check "$1" --client /usr/local/bin/xray --client-sha256 "$(sha256sum /usr/local/bin/xray | cut -d ' ' -f 1)" --client-version "$(/usr/local/bin/xray version | awk 'NR == 1 {print $2}')" --probe-url https://127.0.0.1:9443/ >/dev/null
 }
 first=$(nodectl render)
 check "$first"

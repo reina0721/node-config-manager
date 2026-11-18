@@ -151,6 +151,7 @@ pub fn run(store: &Store, setup: Setup) -> Result<()> {
         },
         reality_short_id: "0123456789abcdef".into(),
         vless: None,
+        upstreams: Default::default(),
     };
     config::validate_preview(&c, &secrets)?;
     println!("{}", toml::to_string_pretty(&c)?);

@@ -2,7 +2,11 @@ export const shellResources = {
   'zh-CN': {
     translation: {
       nodeShell: {
-        subtitle: '单机节点管理',
+        subtitle: '节点管理',
+        search: '搜索后台页面',
+        loadingSearch: '正在加载搜索',
+        noSearchResults: '没有匹配的页面。',
+        remote: '当前远端节点',
         safe: 'DMIT 默认保护',
         protection: '环境资产可编辑，平台配置由 Rust 强制保护。',
         skip: '跳到主要内容',
@@ -30,7 +34,11 @@ export const shellResources = {
   en: {
     translation: {
       nodeShell: {
-        subtitle: 'Single node management',
+        subtitle: 'Node management',
+        search: 'Search console pages',
+        loadingSearch: 'Loading search',
+        noSearchResults: 'No matching pages.',
+        remote: 'Selected remote node',
         safe: 'DMIT defaults protected',
         protection: 'Environment assets are editable. Rust enforces platform protection.',
         skip: 'Skip to main content',

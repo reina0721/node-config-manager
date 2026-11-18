@@ -1,11 +1,15 @@
-use super::{Access, Database, runtime};
+use super::{
+    Access, Database,
+    meter::{Budget, Online},
+    runtime,
+};
 use crate::{admin_auth, config::Config, store::Store};
 use anyhow::{Context, Result, ensure};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use serde::Deserialize;
 use std::{collections::HashMap, io::ErrorKind, path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, UnixStream},
     sync::{Semaphore, watch},
     time::{interval, timeout},
@@ -18,19 +22,59 @@ const POLL: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 struct Admission {
-    transit: HashMap<Uuid, u64>,
+    transit: HashMap<Uuid, Grant>,
     portals: HashMap<Uuid, Uuid>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct Grant {
+    device: Uuid,
+    expires: u64,
+    budget: Budget,
+    ingress: Option<String>,
+}
+
 impl Admission {
-    fn from_database(db: &Database, now: u64) -> Self {
+    fn from_database(store: &Store, db: &Database, now: u64, ingress: &[String]) -> Self {
         let mut result = Self::default();
+        let mut capacity = HashMap::new();
         if db.enabled {
             for (profile, device) in &db.devices {
-                if db.users.contains_key(&device.username) {
+                if let Some(account) = db.users.get(&device.username) {
                     result.portals.insert(device.portal, *profile);
                     if let Some(expiry) = db.expiry(device, now) {
-                        result.transit.insert(device.transit, expiry);
+                        let budget = Budget {
+                            ledger: account.ledger_id(),
+                            quota: account.quota_bytes,
+                        };
+                        if *capacity
+                            .entry(budget.ledger)
+                            .or_insert_with(|| budget.can_send(store).unwrap_or(false))
+                        {
+                            if ingress.is_empty() {
+                                result.transit.insert(
+                                    device.transit,
+                                    Grant {
+                                        device: *profile,
+                                        expires: expiry,
+                                        budget,
+                                        ingress: None,
+                                    },
+                                );
+                            } else {
+                                for tag in ingress {
+                                    result.transit.insert(
+                                        runtime::ingress_id(device.transit, tag),
+                                        Grant {
+                                            device: *profile,
+                                            expires: expiry,
+                                            budget,
+                                            ingress: Some(tag.clone()),
+                                        },
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -68,12 +112,17 @@ pub(super) async fn serve_on(
     )?);
     let store = refresh.clone();
     let backend = Arc::new(backend);
+    let online = Arc::new(Online::default());
+    let activity = online.clone();
     tokio::spawn(async move {
         let mut ticks = interval(POLL);
         let access = Access(&refresh);
         let path = access.dir().join("access.json");
         let mut loaded = None;
         let mut database = None;
+        let mut installed_revision = None;
+        let mut ingress = site(&refresh).ok().map(|config| runtime::ingress(&config));
+        let mut last_published = None;
         loop {
             ticks.tick().await;
             let revision = state_revision(&path);
@@ -82,9 +131,17 @@ pub(super) async fn serve_on(
                 // Retry an unreadable record while denying new and existing flows.
                 loaded = database.as_ref().and(revision);
             }
+            let revision = state_revision(std::path::Path::new(runtime::XRAY_CONFIG));
+            if revision != installed_revision || ingress.is_none() {
+                ingress = site(&refresh).ok().map(|config| runtime::ingress(&config));
+                installed_revision = revision;
+            }
             let admission = database
                 .as_ref()
-                .map(|db| Admission::from_database(db, admin_auth::now()))
+                .zip(ingress.as_deref())
+                .map(|(db, ingress)| {
+                    Admission::from_database(&refresh, db, admin_auth::now(), ingress)
+                })
                 .unwrap_or_default();
             sender.send_if_modified(|old| {
                 if old.transit == admission.transit && old.portals == admission.portals {
@@ -93,6 +150,11 @@ pub(super) async fn serve_on(
                 *old = admission;
                 true
             });
+            let now = admin_auth::now();
+            if database.as_ref().is_some_and(|db| db.enabled) && last_published != Some(now) {
+                last_published = Some(now);
+                let _ = activity.publish(&refresh, now);
+            }
         }
     });
     let tls = TlsAcceptor::from(Arc::new(runtime::RelayIdentity::load(&store)?.tls()?));
@@ -112,10 +174,11 @@ pub(super) async fn serve_on(
         let logins = logins.clone();
         let backend = backend.clone();
         let tls = tls.clone();
+        let online = online.clone();
         tokio::spawn(async move {
             let _permit = permit;
             if let Ok(Ok(stream)) = timeout(IO_TIMEOUT, tls.accept(stream)).await {
-                let _ = connection(store, stream, state, logins, &backend, site).await;
+                let _ = connection(store, stream, state, logins, &backend, site, &online).await;
             }
         });
     }
@@ -128,6 +191,7 @@ async fn connection(
     logins: Arc<Semaphore>,
     backend: &std::path::Path,
     site: fn(&Store) -> Result<Config>,
+    online: &Online,
 ) -> Result<()> {
     // The private VLESS credential is generated per device and per purpose.
     // External profiles contain neither internal credential. Transit headers
@@ -141,17 +205,27 @@ async fn connection(
         timeout(IO_TIMEOUT, portal(store, stream, profile, logins, site)).await??;
         return Ok(());
     }
-    let authorized = |state: &watch::Receiver<Admission>| {
+    let grant = |state: &watch::Receiver<Admission>| {
         state
             .borrow()
             .transit
             .get(&internal)
-            .is_some_and(|expiry| *expiry > admin_auth::now())
+            .filter(|grant| grant.expires > admin_auth::now())
+            .cloned()
     };
-    ensure!(authorized(&state), "Authorization required");
+    let initial = grant(&state).context("Authorization required")?;
+    let backend = initial.ingress.as_deref().map_or_else(
+        || backend.to_owned(),
+        |tag| runtime::backend_for(backend, tag),
+    );
     let mut outbound = UnixStream::connect(backend).await?;
     outbound.write_all(&header).await?;
-    let relay = tokio::io::copy_bidirectional(&mut stream, &mut outbound);
+    let _active = online.enter(initial.device);
+    let (up_reader, down_writer) = tokio::io::split(stream);
+    let (down_reader, up_writer) = outbound.into_split();
+    let upload = forward(up_reader, up_writer, store.clone(), initial.budget, true);
+    let download = forward(down_reader, down_writer, store, initial.budget, false);
+    let relay = async { tokio::try_join!(upload, download).map(|_| ()) };
     tokio::pin!(relay);
     loop {
         tokio::select! {
@@ -161,11 +235,35 @@ async fn connection(
             }
             changed = state.changed() => {
                 changed?;
-                if !authorized(&state) {
+                if !grant(&state).is_some_and(|grant| grant.budget == initial.budget && grant.ingress == initial.ingress) {
                     return Ok(());
                 }
             }
         }
+    }
+}
+
+async fn forward(
+    mut reader: impl AsyncRead + Unpin,
+    mut writer: impl AsyncWrite + Unpin,
+    store: Arc<Store>,
+    budget: Budget,
+    upload: bool,
+) -> Result<()> {
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let length = reader.read(&mut buffer).await?;
+        if length == 0 {
+            writer.shutdown().await?;
+            return Ok(());
+        }
+        let store = store.clone();
+        let allowed =
+            tokio::task::spawn_blocking(move || budget.reserve(&store, length, upload)).await??;
+        if allowed > 0 {
+            writer.write_all(&buffer[..allowed]).await?;
+        }
+        ensure!(allowed == length, "Proxy traffic quota exhausted");
     }
 }
 
@@ -355,7 +453,15 @@ fn authenticate(store: &Store, id: Uuid, login: Login) -> Result<LoginResult> {
     let Some(account) = data.users.get(username) else {
         return Ok(LoginResult::Denied);
     };
-    let outcome = if username != &login.username || !account.verify(&login.password) {
+    let budget = Budget {
+        ledger: account.ledger_id(),
+        quota: account.quota_bytes,
+    };
+    let outcome = if username != &login.username
+        || !account.verify(&login.password)
+        || !account.active(now)
+        || !budget.can_send(store)?
+    {
         LoginResult::Denied
     } else if device.authenticated.is_none()
         && data

@@ -180,9 +180,40 @@ fn real_api_preserves_inputs_and_enforces_session_policy_review_and_reset() {
     let (status, _, view) = request("GET", "/admin/api/config", &authenticated, None);
     assert_eq!(status, 200);
     assert!(view.get("secrets").is_none());
+    let group = json!({"kind":"group","base":view["base"],"value":{
+        "name":"fixture-group","description":"","enabled":true,"inbounds":[],"hosts":[]
+    }});
+    let mut stale = group.clone();
+    stale["base"] = json!("old-revision");
+    assert_eq!(
+        request(
+            "POST",
+            "/admin/api/catalogue/preview",
+            &authenticated,
+            Some(&stale)
+        )
+        .0,
+        409
+    );
+    let (status, _, result) = request(
+        "POST",
+        "/admin/api/catalogue/preview",
+        &authenticated,
+        Some(&group),
+    );
+    assert_eq!(status, 200);
+    assert!(
+        result["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| change["field"] == "management")
+    );
+    let (status, _, spec) = request("GET", "/admin/api/openapi", &authenticated, None);
+    assert_eq!(status, 200);
+    assert_eq!(spec["openapi"], "3.1.0");
     let mut candidate = view["config"].clone();
-    candidate["clients"]["xhttp_weight"] = json!(75);
-    candidate["clients"]["ws_weight"] = json!(20);
+    candidate["clients"]["fingerprint_weights"]["chrome"] = json!(123);
     assert_eq!(
         request(
             "POST",

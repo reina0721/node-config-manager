@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -150,7 +150,7 @@ impl Reference {
     }
 }
 
-fn trusted_binary(p: &Path) -> Result<()> {
+pub(crate) fn trusted_binary(p: &Path) -> Result<()> {
     let m = fs::metadata(p)?;
     ensure!(m.is_file(), "Missing executable");
     #[cfg(unix)]
@@ -322,7 +322,47 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
     command("id", &[&c.runtime.nginx_user])?;
     command("getent", &["group", &c.runtime.nginx_user])?;
     certificates(&c)?;
-    for route in [&c.transport.xhttp.path, &c.transport.ws.path] {
+    let managed = || c.management.iter().flat_map(|m| m.active_inbounds());
+    ensure!(
+        !crate::catalogue::requires_access(&c) || crate::proxy_access::enabled(store)?,
+        "managed_inbounds_require_proxy_access"
+    );
+    let reality = |config: &Config| {
+        config
+            .management
+            .iter()
+            .flat_map(|m| m.active_inbounds())
+            .filter(|(_, inbound)| inbound.protocol == crate::catalogue::Protocol::Reality)
+            .map(|(_, inbound)| inbound.port)
+            .collect::<BTreeSet<_>>()
+    };
+    let candidate_ports = reality(&c);
+    if !candidate_ports.is_empty() {
+        let current = store
+            .pointer("current")?
+            .map(|id| store.verify(&id))
+            .transpose()?;
+        let active_reality_ports = current
+            .as_ref()
+            .map(|(config, _)| reality(config))
+            .unwrap_or_default();
+        for &port in candidate_ports.difference(&active_reality_ports) {
+            TcpListener::bind(("0.0.0.0", port))
+                .context("Managed REALITY port is already occupied")?;
+            if !c.node.ipv6.is_empty() {
+                TcpListener::bind(("::", port))
+                    .context("Managed REALITY IPv6 port is already occupied")?;
+            }
+        }
+    }
+    for route in [&c.transport.xhttp.path, &c.transport.ws.path]
+        .into_iter()
+        .chain(
+            managed()
+                .filter(|(_, inbound)| inbound.protocol != crate::catalogue::Protocol::Reality)
+                .map(|(_, inbound)| &inbound.path),
+        )
+    {
         ensure!(
             !Path::new(&c.website.root)
                 .join(route.trim_start_matches('/'))
@@ -499,6 +539,19 @@ fn receipt(store: &Store, id: &str) -> Result<Receipt> {
         "Runtime binaries, certificates or WARP configuration changed; check again"
     );
     Ok(r)
+}
+
+pub(crate) fn probe_origin(store: &Store, id: &str) -> Result<(String, u16)> {
+    let path = store.state_dir.join("checks").join(id);
+    store::check_private(&path, false)?;
+    let checked: Receipt = serde_json::from_slice(&fs::read(path)?)?;
+    ensure!(checked.release == id, "Receipt release mismatch");
+    let uri: axum::http::Uri = checked.reference.probe_url.parse()?;
+    let host = uri.host().context("Reference probe needs an HTTPS host")?;
+    Ok((
+        host.trim_matches(['[', ']']).to_owned(),
+        uri.port_u16().unwrap_or(443),
+    ))
 }
 
 pub(crate) const ENTRIES: [(&str, &str); 5] = [
@@ -1510,8 +1563,30 @@ fn activate(
     activate_cn(store, id, c, tx)?;
     activate_web(store, id, c, tx)?;
     activate_sharing(store, id, c, tx, access_token)?;
-    let xray_changed =
-        changed(store, id, old, "xray.json")? || changed(store, id, old, "systemd/xray.service")?;
+    let groups = |c: &Config| {
+        c.management
+            .as_ref()
+            .map(|m| m.groups.clone())
+            .unwrap_or_default()
+    };
+    let hosts = |c: &Config| {
+        c.management
+            .as_ref()
+            .map(|m| m.hosts.clone())
+            .unwrap_or_default()
+    };
+    let rules = |c: &Config| {
+        c.management
+            .as_ref()
+            .map(|m| m.rules.clone())
+            .unwrap_or_default()
+    };
+    let grants_changed = old_c.as_ref().is_some_and(|old| {
+        groups(old) != groups(c) || hosts(old) != hosts(c) || rules(old) != rules(c)
+    });
+    let xray_changed = changed(store, id, old, "xray.json")?
+        || changed(store, id, old, "systemd/xray.service")?
+        || (grants_changed && crate::proxy_access::enabled(store)?);
     if xray_changed || !tx.services["xray"].active {
         command("systemctl", &["restart", "xray"])?;
     }
@@ -1845,6 +1920,59 @@ fn health(store: &Store, c: &Config, s: &Secrets, reference: &Reference) -> Resu
         handshake(store, c, s, reference, kind)
             .with_context(|| format!("{kind} live handshake failed"))?;
     }
+    if let Some(catalogue) = &c.management {
+        use crate::catalogue::{self, Endpoint, Target};
+        let has_hosts = catalogue.hosts.values().any(|host| host.enabled);
+        if has_hosts || catalogue.active_inbounds().next().is_some() {
+            let health_id = crate::proxy_access::health_id(store)?
+                .context("managed_inbounds_require_proxy_access")?;
+            for (id, inbound) in catalogue.active_inbounds() {
+                let target = Target::Managed(id, inbound);
+                let endpoint = Endpoint {
+                    address: "127.0.0.1".into(),
+                    port: target.port(c),
+                };
+                let outbound =
+                    catalogue::client_outbound(c, s, target, None, Some(&endpoint), health_id)?;
+                check_client_outbound(reference, outbound)
+                    .with_context(|| format!("Managed inbound {id} handshake failed"))?;
+            }
+            for (&id, host) in &catalogue.hosts {
+                if !host.enabled {
+                    continue;
+                }
+                let target = catalogue
+                    .target(&host.inbound)
+                    .context("Unknown host inbound")?;
+                let fallback = if host.port == 0 {
+                    target.port(c)
+                } else {
+                    host.port
+                };
+                for address in &host.addresses {
+                    let endpoint = catalogue::endpoint(address, fallback)?;
+                    let credential = catalogue::host_probe_id(health_id, id);
+                    let outbound = catalogue::client_outbound(
+                        c,
+                        s,
+                        target,
+                        Some(host),
+                        Some(&endpoint),
+                        credential,
+                    )?;
+                    check_client_outbound(reference, outbound)
+                        .with_context(|| format!("Managed host {id} handshake failed"))?;
+                }
+            }
+        }
+        for (&id, upstream) in &catalogue.upstreams {
+            if upstream.enabled {
+                let outbound = crate::egress::upstream(id, upstream, s.upstreams.get(&id))?;
+                check_client_outbound(reference, outbound)
+                    .with_context(|| format!("Upstream {id} connectivity check failed"))?;
+            }
+        }
+    }
     crate::cn_warp::health(c)?;
     crate::web_services::health(c)?;
     crate::web_services::public_health(c)?;
@@ -1863,6 +1991,20 @@ pub(crate) fn verify_live_success(store: &Store, id: &str) -> Result<()> {
     health(store, &c, &s, &receipt.reference)
 }
 
+pub(crate) fn test_upstream(store: &Store, upstream: uuid::Uuid) -> Result<()> {
+    let _guard = store.lock()?;
+    let id = store.pointer("current")?.context("not_deployed")?;
+    let (config, secrets) = store.verify(&id)?;
+    let node = config
+        .management
+        .as_ref()
+        .and_then(|m| m.upstreams.get(&upstream))
+        .filter(|node| node.enabled)
+        .context("not_found")?;
+    let outbound = crate::egress::upstream(upstream, node, secrets.upstreams.get(&upstream))?;
+    check_client_outbound(&receipt(store, &id)?.reference, outbound)
+}
+
 fn handshake(
     store: &Store,
     c: &Config,
@@ -1870,22 +2012,28 @@ fn handshake(
     reference: &Reference,
     kind: &str,
 ) -> Result<()> {
-    let tmp = tempfile::tempdir()?;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
     let mut outbound = render::outbound(c, s, kind, "chrome")?;
     if let Some(id) = crate::proxy_access::health_id(store)? {
         outbound["settings"]["vnext"][0]["users"][0]["id"] = json!(id);
     }
-    // Isolated integration fixtures use an ephemeral CA installed in the OS.
-    // Xray otherwise defaults to its embedded public roots. Keep verification
-    // enabled; release binaries never include this test-only trust selection.
-    #[cfg(feature = "integration-test")]
-    if kind != "reality" {
-        outbound["streamSettings"]["tlsSettings"]["useSystemCA"] = json!(true);
-    }
     // Local loopback is the server under test; retain the real SNI and Host.
     outbound["settings"]["vnext"][0]["address"] = json!("127.0.0.1");
+    check_client_outbound(reference, outbound)
+}
+
+fn check_client_outbound(reference: &Reference, outbound: serde_json::Value) -> Result<()> {
+    // Only the isolated fixture switches to the OS CA store for its local CA.
+    #[cfg(feature = "integration-test")]
+    let outbound = {
+        let mut outbound = outbound;
+        if outbound["streamSettings"]["security"] == "tls" {
+            outbound["streamSettings"]["tlsSettings"]["useSystemCA"] = json!(true);
+        }
+        outbound
+    };
+    let tmp = tempfile::tempdir()?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
     let profile = json!({"log":{"loglevel":"none"},"inbounds":[{"listen":"127.0.0.1","port":port,
         "protocol":"socks","settings":{"auth":"noauth","udp":true}}],"outbounds":[outbound]});
     let config = tmp.path().join("client.json");

@@ -24,6 +24,7 @@ fn fixture() -> (Config, Secrets) {
             reality_private_key: URL_SAFE_NO_PAD.encode([7; 32]),
             reality_short_id: "0123456789abcdef".into(),
             vless: None,
+            upstreams: Default::default(),
         },
     )
 }
@@ -639,7 +640,7 @@ fn world_readable_input_is_rejected() {
 }
 
 #[test]
-#[ignore = "Requires XRAY_TEST_BINARY pointing to the official v26.10.10 binary"]
+#[ignore = "Requires XRAY_TEST_BINARY pointing to the locked official binary"]
 fn upstream_xray_accepts_server_and_all_client_configs() {
     let binary = std::env::var("XRAY_TEST_BINARY").expect("Set XRAY_TEST_BINARY");
     let tmp = tempfile::tempdir().unwrap();
@@ -677,4 +678,114 @@ fn upstream_xray_accepts_server_and_all_client_configs() {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn catalogue_validation_and_device_exports_preserve_builtins_and_group_scope() -> anyhow::Result<()>
+{
+    use crate::catalogue::{Catalogue, Format, Group, Host, Inbound, IpVersion, Protocol};
+    let (mut config, secrets) = fixture();
+    let builtins = render::profiles(&config, &secrets)?;
+    let mut catalogue = Catalogue::default();
+    let inbound_id = uuid::Uuid::new_v4();
+    let host_id = uuid::Uuid::new_v4();
+    let group_id = uuid::Uuid::new_v4();
+    catalogue.inbounds.insert(
+        inbound_id,
+        Inbound {
+            remark: "Extra WS".into(),
+            protocol: Protocol::Ws,
+            path: "/additional/ingress".into(),
+            port: 0,
+            enabled: true,
+        },
+    );
+    catalogue.hosts.insert(
+        host_id,
+        Host {
+            remark: "Relay".into(),
+            description: String::new(),
+            node: "local".into(),
+            inbound: inbound_id.to_string(),
+            addresses: vec!["edge.example.org:7443".into(), "[2001:db8::3]".into()],
+            port: 444,
+            tags: vec![],
+            enabled: true,
+            sni: config.node.domain.clone(),
+            alpn: vec!["http/1.1".into()],
+            host_header: String::new(),
+            path: String::new(),
+            fingerprint: String::new(),
+            order: 0,
+            mihomo_ip_version: IpVersion::Ipv6Prefer,
+            mihomo_udp: false,
+            formats: [Format::Mihomo, Format::Xray].into(),
+        },
+    );
+    catalogue.groups.insert(
+        group_id,
+        Group {
+            name: "Operators".into(),
+            description: String::new(),
+            enabled: true,
+            inbounds: [inbound_id].into(),
+            hosts: [host_id].into(),
+        },
+    );
+    config.management = Some(catalogue);
+    config::validate(&config, &secrets)?;
+    assert_eq!(builtins, render::profiles(&config, &secrets)?);
+    let id = uuid::Uuid::new_v4();
+    let login = "https://node.example.org:19443";
+    let without = render::device_profiles(
+        &config,
+        &secrets,
+        id,
+        &Default::default(),
+        "mihomo-weighted",
+        login,
+    )?;
+    let with = render::device_profiles(
+        &config,
+        &secrets,
+        id,
+        &[group_id].into(),
+        "mihomo-weighted",
+        login,
+    )?;
+    let without: serde_json::Value = serde_json::from_slice(&without)?;
+    let with: serde_json::Value = serde_json::from_slice(&with)?;
+    let baseline = without["proxies"].as_array().unwrap();
+    let proxies = with["proxies"].as_array().unwrap();
+    assert_eq!(&proxies[..baseline.len()], baseline);
+    assert_eq!(proxies.len() - baseline.len(), 3);
+    assert_eq!(proxies[baseline.len() + 1]["port"], 7443);
+    assert_eq!(proxies[baseline.len() + 2]["port"], 444);
+    assert_eq!(proxies[baseline.len() + 2]["ip-version"], "ipv6-prefer");
+    let slots = with["proxy-groups"][1]["proxies"].as_array().unwrap();
+    assert_eq!(
+        slots
+            .iter()
+            .filter(|tag| **tag == "nodectl WebSocket")
+            .count(),
+        3
+    );
+    assert_eq!(
+        with["proxy-groups"][3]["proxies"].as_array().unwrap().len(),
+        4
+    );
+    let rendered = render::files(&config, &secrets)?;
+    let nginx = std::str::from_utf8(&rendered["nginx.conf"])?;
+    assert!(nginx.contains("location = /additional/ingress"));
+    let conflicting = config.transport.ws.path.clone();
+    config
+        .management
+        .as_mut()
+        .unwrap()
+        .inbounds
+        .get_mut(&inbound_id)
+        .unwrap()
+        .path = conflicting;
+    assert!(config::validate(&config, &secrets).is_err());
+    Ok(())
 }

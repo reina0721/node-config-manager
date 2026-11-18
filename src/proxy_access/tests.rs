@@ -284,6 +284,39 @@ async fn real_xray_denies_unauthenticated_traffic_and_revokes_existing_connectio
     let (tmp, store) = crate::tests::sandbox();
     let (mut config, _) = store.inputs()?;
     config.tls.domain_cert_dir = tmp.path().to_str().unwrap().into();
+    if std::env::var_os("NODECTL_ACCESS_TEST_ROUTING").is_some() {
+        let management = config.management.get_or_insert_with(Default::default);
+        management.rules.insert(
+            Uuid::new_v4(),
+            crate::egress::Rule {
+                name: "Only the XHTTP ingress may reach the echo service".into(),
+                order: 0,
+                enabled: true,
+                inbounds: ["xhttp".into()].into(),
+                domains: vec![],
+                ips: vec!["127.0.0.0/8".into()],
+                port_min: None,
+                port_max: None,
+                network: None,
+                outbound: "direct".into(),
+            },
+        );
+        management.rules.insert(
+            Uuid::new_v4(),
+            crate::egress::Rule {
+                name: "Reject other ingress traffic".into(),
+                order: 1,
+                enabled: true,
+                inbounds: Default::default(),
+                domains: vec![],
+                ips: vec![],
+                port_min: None,
+                port_max: None,
+                network: None,
+                outbound: "block".into(),
+            },
+        );
+    }
     store::atomic_write(
         &store.config_dir.join("node.toml"),
         toml::to_string(&config)?.as_bytes(),
@@ -385,6 +418,7 @@ async fn real_xray_denies_unauthenticated_traffic_and_revokes_existing_connectio
         address,
         backend.to_str().unwrap(),
         &pin,
+        None,
     )?;
     let _server = start(&binary, tmp.path(), "server.json", server)?;
     ready(front).await?;

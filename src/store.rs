@@ -26,6 +26,23 @@ pub fn file_digest(path: &Path) -> Result<String> {
     Ok(digest(&fs::read(path)?))
 }
 
+pub fn redact_text(mut text: String, secrets: &[String]) -> String {
+    let mut sensitive = Vec::new();
+    for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
+        sensitive.push(secret.clone());
+        let encoded = serde_json::Value::String(secret.clone()).to_string();
+        let escaped = &encoded[1..encoded.len() - 1];
+        if escaped != secret {
+            sensitive.push(escaped.to_owned());
+        }
+    }
+    sensitive.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    for secret in sensitive {
+        text = text.replace(&secret, "<redacted>");
+    }
+    text
+}
+
 pub fn private_dir(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -238,13 +255,19 @@ impl Store {
                         && (manifest.generator_version == env!("CARGO_PKG_VERSION")
                             || [
                                 "0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "0.6.4",
-                                "0.6.5", "0.7.0", "0.7.1", "0.7.2", "0.7.3"
+                                "0.6.5", "0.7.0", "0.7.1", "0.7.2", "0.7.3", "0.7.4", "0.8.0"
                             ]
                             .contains(&manifest.generator_version.as_str())))),
             "Release requires its original nodectl/template version"
         );
         check_private(&path.join("source"), true)?;
         let (c, s) = config::load(&path.join("source"))?;
+        ensure!(
+            manifest.generator_version == env!("CARGO_PKG_VERSION")
+                || manifest.generator_version == "0.8.0"
+                || c.management.is_none(),
+            "Historical release contains unsupported management fields"
+        );
         ensure!(
             !(legacy || v2 || v3) || (c.cn_warp.is_none() && c.web_services.is_none()),
             "Legacy release contains unsupported CN WARP or website fields"
@@ -330,26 +353,19 @@ impl Store {
         Ok(())
     }
     pub fn diff(&self, id: &str) -> Result<String> {
-        let (_, s) = self.verify(id)?;
+        let (c, s) = self.verify(id)?;
         let previous = self.pointer("current")?;
         let mut secrets = s
             .sensitive()
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
+        secrets.extend(crate::catalogue::redactions(&c, &s));
         if let Some(old) = &previous {
-            let (_, s) = self.verify(old)?;
+            let (c, s) = self.verify(old)?;
             secrets.extend(s.sensitive().into_iter().map(str::to_owned));
+            secrets.extend(crate::catalogue::redactions(&c, &s));
         }
-        let redact = |data: &str| {
-            let mut value = data.to_owned();
-            for secret in &secrets {
-                if !secret.is_empty() {
-                    value = value.replace(secret, "<redacted>");
-                }
-            }
-            value
-        };
         let mut output = format!("Candidate: {id}\n");
         for (name, service) in [
             ("xray.json", "xray"),
@@ -370,8 +386,8 @@ impl Store {
             let after = fs::read_to_string(self.release(id)?.join(name))?;
             if before != after {
                 output.push_str(&format!("Affected: {service} ({name})\n"));
-                let before = redact(&before);
-                let after = redact(&after);
+                let before = redact_text(before, &secrets);
+                let after = redact_text(after, &secrets);
                 output.push_str(
                     &similar::TextDiff::from_lines(&before, &after)
                         .unified_diff()

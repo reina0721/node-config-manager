@@ -1,5 +1,5 @@
 use crate::config::{Config, Secrets};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -75,6 +75,7 @@ pub fn xray(c: &Config, s: &Secrets) -> Value {
         "error":format!("{}/xray/error.log",c.runtime.log_root)},"inbounds":inbounds,
         "outbounds":[direct,{"tag":"block","protocol":"blackhole"}]});
     crate::cn_warp::xray(c, &mut rendered);
+    crate::catalogue::augment_xray(c, s, &mut rendered);
     rendered
 }
 
@@ -145,52 +146,73 @@ pub fn mihomo(c: &Config, s: &Secrets) -> Result<Vec<u8>> {
 
 fn mihomo_nodes(c: &Config, s: &Secrets) -> Result<Vec<Value>> {
     let profiles = profiles(c, s)?;
-    let mut proxies = vec![];
-    for p in profiles["profiles"].as_array().unwrap() {
-        let o = &p["outbound"];
-        let stream = &o["streamSettings"];
-        let user = &o["settings"]["vnext"][0]["users"][0];
-        let real = stream["security"] == "reality";
-        let tls = if real {
-            &stream["realitySettings"]
-        } else {
-            &stream["tlsSettings"]
-        };
-        let mut node = json!({"name":p["name"],"type":"vless","server":o["settings"]["vnext"][0]["address"],"port":o["settings"]["vnext"][0]["port"],"uuid":user["id"],"udp":true,"packet-encoding":"xudp","tls":true,"servername":tls["serverName"],"client-fingerprint":tls["fingerprint"],"skip-cert-verify":false,"network":stream["network"]});
-        if stream["network"] == "ws" {
-            node["alpn"] = json!(["http/1.1"]);
-            node["ws-opts"] = stream["wsSettings"].clone();
-        } else {
-            node["alpn"] = json!(["h2", "http/1.1"]);
-            node["xhttp-opts"] = stream["xhttpSettings"].clone();
-        }
-        if real {
-            // The pinned REALITY server requires the hybrid key share. Mihomo
-            // otherwise strips it from its fingerprint by default.
-            node["reality-opts"] = json!({"public-key":tls["password"],"short-id":tls["shortId"],"support-x25519mlkem768":true});
-        }
-        if c.encrypted() {
-            node["encryption"] = user["encryption"].clone();
-            node["flow"] = json!("xtls-rprx-vision");
-        }
-        proxies.push(node);
+    Ok(profiles["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| mihomo_node(c, p["name"].as_str().unwrap(), &p["outbound"], None))
+        .collect())
+}
+
+fn mihomo_node(c: &Config, name: &str, o: &Value, host: Option<&crate::catalogue::Host>) -> Value {
+    let stream = &o["streamSettings"];
+    let user = &o["settings"]["vnext"][0]["users"][0];
+    let real = stream["security"] == "reality";
+    let tls = if real {
+        &stream["realitySettings"]
+    } else {
+        &stream["tlsSettings"]
+    };
+    let mut node = json!({"name":name,"type":"vless","server":o["settings"]["vnext"][0]["address"],"port":o["settings"]["vnext"][0]["port"],"uuid":user["id"],"udp":true,"packet-encoding":"xudp","tls":true,"servername":tls["serverName"],"client-fingerprint":tls["fingerprint"],"skip-cert-verify":false,"network":stream["network"]});
+    if stream["network"] == "ws" {
+        node["alpn"] = json!(["http/1.1"]);
+        node["ws-opts"] = stream["wsSettings"].clone();
+    } else {
+        node["alpn"] = json!(["h2", "http/1.1"]);
+        node["xhttp-opts"] = stream["xhttpSettings"].clone();
     }
-    Ok(proxies)
+    if real {
+        // The pinned REALITY server requires the hybrid key share. Mihomo
+        // otherwise strips it from its fingerprint by default.
+        node["reality-opts"] = json!({"public-key":tls["password"],"short-id":tls["shortId"],"support-x25519mlkem768":true});
+    }
+    if c.encrypted() {
+        node["encryption"] = user["encryption"].clone();
+        node["flow"] = json!("xtls-rprx-vision");
+    }
+    if let Some(host) = host {
+        node["udp"] = json!(host.mihomo_udp);
+        node["ip-version"] = json!(host.mihomo_ip_version);
+        if !host.alpn.is_empty() {
+            node["alpn"] = json!(host.alpn);
+        }
+    }
+    node
 }
 
 pub fn mihomo_weighted(c: &Config, s: &Secrets, browser_login: Option<&str>) -> Result<Vec<u8>> {
-    let proxies = mihomo_nodes(c, s)?;
+    weighted_proxies(c, mihomo_nodes(c, s)?, browser_login, false)
+}
+
+fn weighted_proxies(
+    c: &Config,
+    proxies: Vec<Value>,
+    browser_login: Option<&str>,
+    use_protocol_groups: bool,
+) -> Result<Vec<u8>> {
     let mut protocols = [Vec::new(), Vec::new(), Vec::new()];
-    let manual: Vec<&str> = proxies
-        .iter()
-        .filter_map(|proxy| proxy["name"].as_str())
-        .collect();
-    for &name in &manual {
-        match name {
-            "ws" => protocols[1].push(name),
-            "reality" => protocols[2].push(name),
-            _ => protocols[0].push(name),
-        }
+    let mut manual = Vec::new();
+    for proxy in &proxies {
+        let name = proxy["name"].as_str().context("Proxy name missing")?;
+        manual.push(name);
+        let protocol = if proxy["reality-opts"].is_object() {
+            2
+        } else if proxy["network"] == "ws" {
+            1
+        } else {
+            0
+        };
+        protocols[protocol].push(name);
     }
     let weights = [
         c.clients.xhttp_weight,
@@ -211,6 +233,7 @@ pub fn mihomo_weighted(c: &Config, s: &Secrets, browser_login: Option<&str>) -> 
     let mut slots = Vec::new();
     let mut credits = [0i32; 3];
     let mut next = [0; 3];
+    let group_names = ["nodectl XHTTP", "nodectl WebSocket", "nodectl REALITY"];
     for _ in 0..100 {
         for (credit, weight) in credits.iter_mut().zip(weights) {
             *credit += weight as i32;
@@ -218,7 +241,11 @@ pub fn mihomo_weighted(c: &Config, s: &Secrets, browser_login: Option<&str>) -> 
         let protocol = (0..3).max_by_key(|&index| credits[index]).unwrap();
         credits[protocol] -= 100;
         let nodes = &protocols[protocol];
-        slots.push(nodes[next[protocol] % nodes.len()]);
+        slots.push(if use_protocol_groups {
+            group_names[protocol]
+        } else {
+            nodes[next[protocol] % nodes.len()]
+        });
         next[protocol] += 1;
         if credits == [0; 3] {
             break;
@@ -236,18 +263,72 @@ pub fn mihomo_weighted(c: &Config, s: &Secrets, browser_login: Option<&str>) -> 
     const AUTO: &str = "nodectl 按比例分流";
     const GROUP: &str = "nodectl";
     let choices: Vec<&str> = std::iter::once(AUTO).chain(manual).collect();
+    let balanced = |name, members: Vec<&str>| {
+        json!({"name":name, "type":"load-balance", "strategy":"round-robin", "proxies":members,
+        "url":health_url, "expected-status":"200", "interval":300, "hidden":true})
+    };
+    let mut groups = vec![
+        json!({"name":GROUP,"type":"select","proxies":choices}),
+        balanced(AUTO, slots),
+    ];
+    if use_protocol_groups {
+        groups.extend(
+            group_names
+                .into_iter()
+                .zip(protocols)
+                .map(|(name, members)| balanced(name, members)),
+        );
+    }
     Ok(serde_json::to_vec_pretty(&json!({
         "mixed-port": 7890,
         "allow-lan": false,
         "mode": "rule",
         "proxies": proxies,
-        "proxy-groups": [
-            {"name": GROUP, "type": "select", "proxies": choices},
-            {"name": AUTO, "type": "load-balance", "strategy": "round-robin", "proxies": slots,
-             "url": health_url, "expected-status": "200", "interval": 300, "hidden": true},
-        ],
+        "proxy-groups": groups,
         "rules": [format!("MATCH,{GROUP}")],
     }))?)
+}
+
+pub fn device_profiles(
+    c: &Config,
+    s: &Secrets,
+    id: uuid::Uuid,
+    groups: &std::collections::BTreeSet<uuid::Uuid>,
+    format: &str,
+    login: &str,
+) -> Result<Vec<u8>> {
+    use crate::catalogue::Format;
+    let mut identity = s.clone();
+    identity.xhttp_uuid = id.to_string();
+    identity.ws_uuid = id.to_string();
+    identity.reality_uuid = id.to_string();
+    match format {
+        "xray" => {
+            let mut profiles = profiles(c, &identity)?;
+            profiles["profiles"].as_array_mut().unwrap().extend(
+                crate::catalogue::client_entries(c, s, id, groups, Format::Xray)?
+                    .into_iter()
+                    .map(|entry| json!({"name":entry.name,"outbound":entry.outbound})),
+            );
+            Ok(serde_json::to_vec_pretty(&profiles)?)
+        }
+        "mihomo" | "mihomo-weighted" => {
+            let mut proxies = mihomo_nodes(c, &identity)?;
+            let entries = crate::catalogue::client_entries(c, s, id, groups, Format::Mihomo)?;
+            let extended = !entries.is_empty();
+            proxies.extend(
+                entries
+                    .into_iter()
+                    .map(|entry| mihomo_node(c, &entry.name, &entry.outbound, entry.host)),
+            );
+            if format == "mihomo" {
+                Ok(serde_json::to_vec_pretty(&json!({"proxies":proxies}))?)
+            } else {
+                weighted_proxies(c, proxies, Some(login), extended)
+            }
+        }
+        _ => anyhow::bail!("bad_request"),
+    }
 }
 
 pub fn profiles(c: &Config, s: &Secrets) -> Result<Value> {
@@ -440,8 +521,10 @@ pub fn files_with_geodata(
         format!("Environment=XRAY_LOCATION_ASSET={}\nCapabilityBoundingSet=CAP_NET_RAW\nAmbientCapabilities=CAP_NET_RAW", crate::cn_warp::runtime_asset_dir()?.display())
     } else {String::new()});
     let operations = operations(c);
+    let mut xray = xray(c, s);
+    crate::egress::append_outbounds(c, s, &mut xray)?;
     let mut files = BTreeMap::from([
-        ("xray.json".into(), serde_json::to_vec_pretty(&xray(c, s))?),
+        ("xray.json".into(), serde_json::to_vec_pretty(&xray)?),
         (
             "clients/profiles.json".into(),
             serde_json::to_vec_pretty(&profiles(c, s)?)?,

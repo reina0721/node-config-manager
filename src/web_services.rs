@@ -787,8 +787,11 @@ pub(crate) fn publish_nonsecret_assets(
 }
 
 pub fn nginx(c: &Config, vars: &mut BTreeMap<&'static str, String>) -> Result<()> {
-    let transports =
-        render::template(include_str!("../templates/nginx-transports.conf.tpl"), vars)?;
+    let transports = crate::catalogue::nginx(
+        c,
+        include_str!("../templates/nginx-transports.conf.tpl"),
+        vars,
+    )?;
     vars.insert("TRANSPORT_ROUTES", transports);
     vars.insert("WEB_ROUTES", String::new());
     vars.insert("FILES_SERVER", String::new());

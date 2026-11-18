@@ -24,7 +24,10 @@ fn command(program: &str, args: &[&str]) -> Result<Vec<u8>> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
         if detail.is_empty() {
-            bail!("Artifact tool failed: {program}; exit code: {:?}", output.status.code());
+            bail!(
+                "Artifact tool failed: {program}; exit code: {:?}",
+                output.status.code()
+            );
         } else {
             bail!("Artifact tool failed: {program}: {detail}");
         }

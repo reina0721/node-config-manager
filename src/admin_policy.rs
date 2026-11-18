@@ -40,8 +40,18 @@ pub fn changes(a: &Value, b: &Value, prefix: &str, result: &mut Vec<Value>) {
             );
         }
     } else {
+        let catalogue = prefix == "management"
+            || ["hosts", "inbounds", "groups", "upstreams", "rules"]
+                .iter()
+                .any(|name| {
+                    let field = format!("management.{name}");
+                    prefix == field
+                        || prefix
+                            .strip_prefix(&field)
+                            .is_some_and(|tail| tail.starts_with('.'))
+                });
         result.push(
-            json!({"field":prefix,"before":a,"after":b,"protected":!ASSETS.contains(&prefix)}),
+            json!({"field":prefix,"before":a,"after":b,"protected":!catalogue && !ASSETS.contains(&prefix)}),
         );
     }
 }

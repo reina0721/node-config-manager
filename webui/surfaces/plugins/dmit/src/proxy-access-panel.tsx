@@ -4,7 +4,7 @@ import { Section } from '@community-go/surface-foundation/layout';
 import { Action } from '@community-go/ui-adapter/action';
 import { DataTable } from '@community-go/ui-adapter/data-display';
 import { AlertBanner } from '@community-go/ui-adapter/feedback';
-import { PasswordField, TextField } from '@community-go/ui-adapter/form-field';
+import { PasswordField, SwitchField, TextField } from '@community-go/ui-adapter/form-field';
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import {
   useNodeManagement,
@@ -139,6 +139,11 @@ export default function ProxyAccessPanel({
             },
             {
               id: 'actions',
+              label: t('access.connectedDevices'),
+              render: (user) => user.devices.filter((device) => device.connections > 0).length,
+            },
+            {
+              id: 'controls',
               label: t('access.actions'),
               render: (user) => (
                 <div className="flex flex-wrap gap-2">
@@ -234,6 +239,22 @@ export default function ProxyAccessPanel({
           }
           queueFull={bulk.length >= 50}
         />
+        {user && (
+          <AccountPolicy
+            key={user.username}
+            user={user}
+            busy={busy}
+            enabled={data.enabled}
+            change={change}
+            reset={() =>
+              setConfirm({
+                label: t('access.reset'),
+                description: t('access.resetRisk'),
+                change: { action: 'reset-traffic', username: user.username },
+              })
+            }
+          />
+        )}
         {bulk.length ? (
           <div className="grid gap-3">
             <h3 className="font-semibold">
@@ -487,6 +508,92 @@ function UserEditor({
           />
         </>
       ) : null}
+    </div>
+  );
+}
+
+function AccountPolicy({
+  user,
+  busy,
+  enabled,
+  change,
+  reset,
+}: {
+  user: User;
+  busy: boolean;
+  enabled: boolean;
+  change: (input: ProxyAccessChange) => Promise<boolean>;
+  reset: () => void;
+}) {
+  const t = useNodeText();
+  const [disabled, setDisabled] = useState(user.disabled);
+  const [expiry, setExpiry] = useState(
+    user.expires === null ? '' : new Date(user.expires * 1000).toISOString(),
+  );
+  const [quota, setQuota] = useState(user.quota_bytes === null ? '' : String(user.quota_bytes));
+  const expirySeconds = expiry.trim() ? Math.floor(Date.parse(expiry) / 1000) : null;
+  const quotaBytes = quota.trim() ? Number(quota) : null;
+  const valid =
+    (expirySeconds === null ||
+      (/Z$/i.test(expiry) && Number.isSafeInteger(expirySeconds) && expirySeconds > 0)) &&
+    (quotaBytes === null || (Number.isSafeInteger(quotaBytes) && quotaBytes > 0));
+  const differs =
+    user.disabled !== disabled || user.expires !== expirySeconds || user.quota_bytes !== quotaBytes;
+  return (
+    <div className="grid gap-4">
+      <h3 className="font-semibold">{t('access.accountPolicy')}</h3>
+      <Details
+        label={t('access.accountPolicy')}
+        items={[
+          [t('access.upload'), user.traffic.upload.toLocaleString()],
+          [t('access.download'), user.traffic.download.toLocaleString()],
+        ]}
+      />
+      <SwitchField
+        label={t('access.accountEnabled')}
+        description=""
+        checked={!disabled}
+        onCheckedChange={(value) => setDisabled(!value)}
+      />
+      <TextField
+        label={t('access.accountExpiry')}
+        hint={t('access.accountExpiryHint')}
+        value={expiry}
+        onChange={(e) => setExpiry(e.target.value)}
+      />
+      <TextField
+        label={t('access.accountQuota')}
+        hint={t('access.accountQuotaHint')}
+        value={quota}
+        onChange={(e) => setQuota(e.target.value)}
+      />
+      <div className="flex flex-wrap gap-3">
+        <ConfirmDialog
+          triggerLabel={t('access.applyPolicy')}
+          title={t('access.applyPolicy')}
+          description={t('access.policyRisk')}
+          impact={null}
+          cancelLabel={t('common.cancel')}
+          confirmLabel={t('access.save')}
+          failureMessage={t('common.failed')}
+          confirmDisabled={busy || !enabled || !valid || !differs}
+          onConfirm={async () => {
+            if (
+              !(await change({
+                action: 'policy',
+                username: user.username,
+                disabled,
+                expires: expirySeconds,
+                quota_bytes: quotaBytes,
+              }))
+            )
+              throw new Error(t('common.failed'));
+          }}
+        />
+        <Action variant="secondary" disabled={busy} onPress={reset}>
+          {t('access.reset')}
+        </Action>
+      </div>
     </div>
   );
 }

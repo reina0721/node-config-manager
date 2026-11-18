@@ -1,6 +1,14 @@
 'use client';
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  Fragment,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   createFrontendI18n,
   FrontendI18nProvider,
@@ -98,14 +106,22 @@ export function ConsoleRuntime({ children }: Readonly<{ children: ReactNode }>) 
   const [authenticated, setAuthenticated] = useState(false);
   const [initialError, setInitialError] = useState('');
   const [job, setJob] = useState<ManagedJob | null>(null);
+  const [selectedNode, setSelectedNode] = useState({ id: 'local', name: '' });
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [reduced, setReduced] = useState(false);
   const api = useMemo(
     () =>
-      createAdminApi(() => {
-        setAuthenticated(false);
-        setJob(null);
-      }, setJob),
+      createAdminApi(
+        () => {
+          setAuthenticated(false);
+          setJob(null);
+        },
+        setJob,
+        (node) => {
+          setSelectedNode(node);
+          setJob(null);
+        },
+      ),
     [],
   );
   useEffect(() => {
@@ -164,7 +180,7 @@ export function ConsoleRuntime({ children }: Readonly<{ children: ReactNode }>) 
     }),
     [api, theme],
   );
-  const port = useMemo(() => ({ ...api.port, job }), [api, job]);
+  const port = useMemo(() => ({ ...api.port, job, selectedNode }), [api, job, selectedNode]);
   return (
     <FrontendI18nProvider runtime={i18n}>
       <MotionPolicyContext.Provider value={policy}>
@@ -193,7 +209,7 @@ export function ConsoleRuntime({ children }: Readonly<{ children: ReactNode }>) 
                 ) : null}
               </>
             ) : (
-              children
+              <Fragment key={selectedNode.id}>{children}</Fragment>
             )}
           </NodeManagementProvider>
         </SessionContext.Provider>

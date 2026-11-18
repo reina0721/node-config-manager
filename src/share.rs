@@ -389,7 +389,7 @@ pub(crate) fn subscription_profiles(
     if let Some(device) = device {
         return Ok((
             id,
-            crate::proxy_access::render_profile(&c, s, device, format)?,
+            crate::proxy_access::render_profile(store, &c, &s, device, format)?,
         ));
     }
     let bytes = match format {

@@ -17,6 +17,7 @@ const UNIT: &str = "nodectl-admin-version-switch";
 const TIME_LIMIT: u64 = 30 * 60;
 const WEB_MINIMUM: [u64; 3] = [0, 6, 5];
 const ACCESS_MINIMUM: [u64; 3] = [0, 7, 1];
+const MANAGEMENT_MINIMUM: [u64; 3] = [0, 8, 0];
 
 #[derive(Serialize, Deserialize)]
 struct Switch {
@@ -77,11 +78,34 @@ fn stable_version(input: &str) -> Result<[u64; 3]> {
 pub fn validate_web(store: &Store, input: &str) -> Result<String> {
     let version = stable_version(input)?;
     ensure!(version >= WEB_MINIMUM, "bad_request");
+    validate_compatibility(store, version)?;
+    Ok(format!("v{}.{}.{}", version[0], version[1], version[2]))
+}
+
+fn validate_compatibility(store: &Store, version: [u64; 3]) -> Result<()> {
     ensure!(
         version >= ACCESS_MINIMUM || !proxy_access::enabled(store)?,
         "version_auth_incompatible"
     );
-    Ok(format!("v{}.{}.{}", version[0], version[1], version[2]))
+    ensure!(
+        version >= MANAGEMENT_MINIMUM || !requires_management_version(store)?,
+        "version_management_incompatible"
+    );
+    Ok(())
+}
+
+fn requires_management_version(store: &Store) -> Result<bool> {
+    if proxy_access::has_account_policies(store)? || crate::fleet::has_records(store)? {
+        return Ok(true);
+    }
+    for pointer in ["current", "previous"] {
+        if let Some(id) = store.pointer(pointer)?
+            && store.verify(&id)?.0.management.is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Deserialize)]
@@ -151,12 +175,21 @@ fn available() -> Result<Vec<String>> {
 pub fn versions(store: &Store) -> Result<Value> {
     let running = format!("v{}", env!("CARGO_PKG_VERSION"));
     let releases = available();
+    let proxy_access = proxy_access::enabled(store)?;
+    let minimum = if requires_management_version(store)? {
+        MANAGEMENT_MINIMUM
+    } else if proxy_access {
+        ACCESS_MINIMUM
+    } else {
+        WEB_MINIMUM
+    };
     Ok(json!({
         "running":running,
         "lookup_failed":releases.is_err(),
         "releases":releases.unwrap_or_default(),
         "status":status(store)?,
-        "proxy_access_enabled":proxy_access::enabled(store)?
+        "proxy_access_enabled":proxy_access,
+        "minimum_version":format!("v{}.{}.{}", minimum[0], minimum[1], minimum[2]),
     }))
 }
 
@@ -229,6 +262,9 @@ pub fn switch(store: &Store, version: &str, port: u16) -> Result<()> {
 
 pub fn run(store: &Store, version: &str, prefix: &Path, execute: bool) -> Result<()> {
     let _lock = if execute { Some(store.lock()?) } else { None };
+    if execute {
+        validate_compatibility(store, stable_version(version)?)?;
+    }
     installer(store, version, prefix, execute, None)
 }
 

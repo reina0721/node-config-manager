@@ -1,5 +1,6 @@
 //! Browser leases authorize device profiles independently of release snapshots.
 mod gateway;
+mod meter;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -60,6 +61,16 @@ struct Account {
     salt: [u8; 32],
     password_hash: [u8; 32],
     device_limit: u16,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    groups: BTreeSet<Uuid>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    disabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quota_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ledger: Option<Uuid>,
 }
 
 impl Account {
@@ -82,6 +93,11 @@ impl Account {
             salt,
             password_hash,
             device_limit,
+            groups: BTreeSet::new(),
+            disabled: false,
+            expires: None,
+            quota_bytes: None,
+            ledger: None,
         })
     }
     fn verify(&self, password: &str) -> bool {
@@ -94,6 +110,16 @@ impl Account {
                 &self.password_hash,
             )
             .is_ok()
+    }
+
+    fn active(&self, now: u64) -> bool {
+        !self.disabled && self.expires.is_none_or(|expiry| expiry > now)
+    }
+
+    fn ledger_id(&self) -> Uuid {
+        // Existing accounts have a unique salt, even when a username is reused.
+        self.ledger
+            .unwrap_or_else(|| Uuid::from_slice(&self.salt[..16]).unwrap())
     }
 }
 
@@ -220,6 +246,19 @@ pub enum Change {
         device_limit: u16,
         password: Option<String>,
     },
+    Policy {
+        username: String,
+        disabled: bool,
+        expires: Option<u64>,
+        quota_bytes: Option<u64>,
+    },
+    GroupMembers {
+        group: Uuid,
+        usernames: BTreeSet<String>,
+    },
+    ResetTraffic {
+        username: String,
+    },
     CreateDevice {
         username: String,
         label: String,
@@ -231,13 +270,15 @@ pub enum Change {
 
 impl Database {
     fn expiry(&self, device: &Device, now: u64) -> Option<u64> {
-        if !self.enabled || !self.users.contains_key(&device.username) {
+        let account = self.users.get(&device.username)?;
+        if !self.enabled || !account.active(now) {
             return None;
         }
         device
             .authenticated
             .filter(|time| *time <= now)
             .and_then(|time| time.checked_add(self.ttl_seconds))
+            .map(|expiry| expiry.min(account.expires.unwrap_or(u64::MAX)))
             .filter(|expiry| *expiry > now)
     }
 
@@ -250,17 +291,28 @@ impl Database {
         }
     }
 
-    fn view(&self, portal: &str) -> Value {
+    fn view(&self, store: &Store, portal: &str) -> Result<Value> {
         let now = admin_auth::now();
-        json!({
-            "enabled":self.enabled, "ttl_seconds":self.ttl_seconds, "portal":portal,
-            "users":self.users.iter().map(|(username, account)| json!({
+        let online = meter::Online::read(store, now);
+        let users = self.users.iter().map(|(username, account)| {
+            let usage = meter::read(store, account.ledger_id())?;
+            let available = account.quota_bytes.is_none_or(|quota| usage.total() < quota);
+            Ok(json!({
                 "username":username, "device_limit":account.device_limit,
+                "groups":account.groups, "disabled":account.disabled, "expires":account.expires,
+                "quota_bytes":account.quota_bytes, "traffic":usage,
                 "devices":self.devices.iter().filter(|(_, device)| &device.username == username)
-                    .map(|(id, device)| json!({"id":id,"label":device.label,"expires":self.expiry(device, now)}))
+                    .map(|(id, device)| {
+                        let expires = if available { self.expiry(device, now) } else { None };
+                        json!({"id":id,"label":device.label,"expires":expires,
+                            "connections": if expires.is_some() { online.get(id).copied().unwrap_or(0) } else { 0 }})
+                    })
                     .collect::<Vec<_>>()
-            })).collect::<Vec<_>>()
-        })
+            }))
+        }).collect::<Result<Vec<_>>>()?;
+        Ok(
+            json!({"enabled":self.enabled, "ttl_seconds":self.ttl_seconds, "portal":portal, "users":users}),
+        )
     }
 
     fn export(&self) -> Value {
@@ -304,7 +356,11 @@ impl Database {
         check_limit(limit)?;
         let account = self.users.get_mut(name).context("not_found")?;
         if let Some(password) = password {
-            *account = Account::new(password, limit)?;
+            let replacement = Account::new(password, limit)?;
+            account.ledger = Some(account.ledger_id());
+            account.salt = replacement.salt;
+            account.password_hash = replacement.password_hash;
+            account.device_limit = limit;
             for device in self.devices.values_mut().filter(|d| d.username == name) {
                 device.authenticated = None;
                 device.attempts.clear();
@@ -333,10 +389,18 @@ fn portal_url(store: &Store) -> String {
 }
 
 pub fn list(store: &Store) -> Result<Value> {
-    Ok(Access(store)
+    Access(store)
         .read()?
         .unwrap_or_default()
-        .view(&portal_url(store)))
+        .view(store, &portal_url(store))
+}
+
+pub fn has_account_policies(store: &Store) -> Result<bool> {
+    Ok(Access(store).read()?.is_some_and(|db| {
+        db.users
+            .values()
+            .any(|a| a.disabled || a.expires.is_some() || a.quota_bytes.is_some())
+    }))
 }
 
 pub fn export(store: &Store) -> Result<Value> {
@@ -347,7 +411,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
     // Take the lifecycle lock before changing Xray's installed configuration.
     let _host = matches!(
         action,
-        Change::Settings { .. } | Change::CreateDevice { .. }
+        Change::Settings { .. } | Change::CreateDevice { .. } | Change::GroupMembers { .. }
     )
     .then(|| store.lock())
     .transpose()?;
@@ -367,6 +431,18 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                 "invalid_proxy_ttl"
             );
             if enabled != data.enabled {
+                if !enabled {
+                    ensure!(
+                        !crate::catalogue::requires_access(&runtime::installed(store)?),
+                        "managed_inbounds_require_proxy_access"
+                    );
+                    ensure!(
+                        data.users
+                            .values()
+                            .all(|a| !a.disabled && a.expires.is_none() && a.quota_bytes.is_none()),
+                        "policies_require_proxy_access"
+                    );
+                }
                 refresh_xray = true;
                 runtime::validate(store, binary)?;
                 for device in data.devices.values_mut() {
@@ -408,6 +484,66 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
             password,
         } => {
             data.edit(&username, device_limit, password.as_deref())?;
+        }
+        Change::Policy {
+            username,
+            disabled,
+            expires,
+            quota_bytes,
+        } => {
+            ensure!(
+                data.enabled || (!disabled && expires.is_none() && quota_bytes.is_none()),
+                "policies_require_proxy_access"
+            );
+            ensure!(quota_bytes != Some(0), "invalid_proxy_quota");
+            ensure!(
+                expires.is_none_or(|expiry| (1..=253_402_300_799).contains(&expiry)),
+                "invalid_proxy_expiry"
+            );
+            let account = data.users.get_mut(&username).context("not_found")?;
+            account.disabled = disabled;
+            account.expires = expires;
+            account.quota_bytes = quota_bytes;
+            for device in data.devices.values_mut().filter(|d| d.username == username) {
+                device.authenticated = None;
+            }
+        }
+        Change::GroupMembers { group, usernames } => {
+            let config = runtime::installed(store)?;
+            ensure!(
+                config
+                    .management
+                    .as_ref()
+                    .is_some_and(|m| m.groups.contains_key(&group)),
+                "not_found"
+            );
+            ensure!(
+                usernames.iter().all(|name| data.users.contains_key(name)),
+                "not_found"
+            );
+            for (name, account) in &mut data.users {
+                let changed = if usernames.contains(name) {
+                    account.groups.insert(group)
+                } else {
+                    account.groups.remove(&group)
+                };
+                if changed {
+                    refresh_xray |= data.enabled;
+                    for device in data.devices.values_mut().filter(|d| &d.username == name) {
+                        device.authenticated = None;
+                    }
+                }
+            }
+            if refresh_xray {
+                runtime::validate(store, binary)?;
+            }
+        }
+        Change::ResetTraffic { username } => {
+            let account = data.users.get_mut(&username).context("not_found")?;
+            account.ledger = Some(Uuid::new_v4());
+            for device in data.devices.values_mut().filter(|d| d.username == username) {
+                device.authenticated = None;
+            }
         }
         Change::CreateDevice { username, label } => {
             ensure!(data.users.contains_key(&username), "not_found");
@@ -475,7 +611,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
         return Err(error);
     }
     drop(lock);
-    Ok(data.view(&portal_url(store)))
+    data.view(store, &portal_url(store))
 }
 
 pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {
@@ -505,7 +641,7 @@ pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {
         }))?);
     }
     Ok(String::from_utf8(render_profile(
-        &config, secrets, id, format,
+        store, &config, &secrets, id, format,
     )?)?)
 }
 
@@ -550,22 +686,28 @@ pub(crate) fn subscription_device(store: &Store, token: &str) -> Result<Option<U
 }
 
 pub(crate) fn render_profile(
+    store: &Store,
     config: &crate::config::Config,
-    mut secrets: crate::config::Secrets,
+    secrets: &crate::config::Secrets,
     id: Uuid,
     format: &str,
 ) -> Result<Vec<u8>> {
-    secrets.xhttp_uuid = id.to_string();
-    secrets.ws_uuid = id.to_string();
-    secrets.reality_uuid = id.to_string();
-    match format {
-        "xray" => Ok(serde_json::to_vec_pretty(&crate::render::profiles(
-            config, &secrets,
-        )?)?),
-        "mihomo" => crate::render::mihomo(config, &secrets),
-        "mihomo-weighted" => {
-            crate::render::mihomo_weighted(config, &secrets, Some(&runtime::portal(config)))
-        }
-        _ => anyhow::bail!("bad_request"),
-    }
+    let data = Access(store).read()?.context("not_found")?;
+    let device = data.devices.get(&id).context("not_found")?;
+    let account = data.users.get(&device.username).context("not_found")?;
+    ensure!(account.active(admin_auth::now()), "not_found");
+    let no_groups = BTreeSet::new();
+    let groups = if data.enabled {
+        &account.groups
+    } else {
+        &no_groups
+    };
+    crate::render::device_profiles(
+        config,
+        secrets,
+        id,
+        groups,
+        format,
+        &runtime::portal(config),
+    )
 }

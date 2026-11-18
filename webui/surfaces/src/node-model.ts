@@ -1,6 +1,155 @@
 import { z } from 'zod';
 
 const toggle = z.object({ enabled: z.boolean() }).strict();
+const inboundProtocol = z.enum(['xhttp', 'ws', 'reality']);
+const managedInboundSchema = z
+  .object({
+    remark: z.string(),
+    protocol: inboundProtocol,
+    path: z.string(),
+    port: z.number().int(),
+    enabled: z.boolean(),
+  })
+  .strict();
+const managedHostSchema = z
+  .object({
+    remark: z.string(),
+    description: z.string(),
+    node: z.literal('local'),
+    inbound: z.string(),
+    addresses: z.array(z.string()),
+    port: z.number().int(),
+    tags: z.array(z.string()),
+    enabled: z.boolean(),
+    sni: z.string(),
+    alpn: z.array(z.string()),
+    host_header: z.string(),
+    path: z.string(),
+    fingerprint: z.string(),
+    order: z.number().int(),
+    mihomo_ip_version: z.enum(['dual', 'ipv4', 'ipv6', 'ipv4-prefer', 'ipv6-prefer']),
+    mihomo_udp: z.boolean(),
+    formats: z.array(z.enum(['xray', 'mihomo'])),
+  })
+  .strict();
+const managedGroupSchema = z
+  .object({
+    name: z.string(),
+    description: z.string(),
+    enabled: z.boolean(),
+    inbounds: z.array(z.string()),
+    hosts: z.array(z.string()),
+  })
+  .strict();
+const upstreamSchema = z
+  .object({
+    name: z.string(),
+    enabled: z.boolean(),
+    protocol: z.enum(['socks5', 'https-connect', 'vless']),
+    address: z.string(),
+    port: z.number().int(),
+    server_name: z.string(),
+  })
+  .strict();
+const routingRuleSchema = z
+  .object({
+    name: z.string(),
+    order: z.number().int(),
+    enabled: z.boolean(),
+    inbounds: z.array(z.string()),
+    domains: z.array(z.string()),
+    ips: z.array(z.string()),
+    port_min: z.number().int().nullable().optional(),
+    port_max: z.number().int().nullable().optional(),
+    network: z.enum(['tcp', 'udp']).nullable().optional(),
+    outbound: z.string(),
+  })
+  .strict();
+const catalogueSchema = z
+  .object({
+    inbounds: z.record(z.string(), managedInboundSchema).optional(),
+    hosts: z.record(z.string(), managedHostSchema).optional(),
+    groups: z.record(z.string(), managedGroupSchema).optional(),
+    upstreams: z.record(z.string(), upstreamSchema).optional(),
+    rules: z.record(z.string(), routingRuleSchema).optional(),
+  })
+  .strict();
+export type ManagedInbound = z.infer<typeof managedInboundSchema>;
+export type ManagedHost = z.infer<typeof managedHostSchema>;
+export type ManagedGroup = z.infer<typeof managedGroupSchema>;
+export type ManagedUpstream = z.infer<typeof upstreamSchema>;
+export type ManagedRule = z.infer<typeof routingRuleSchema>;
+export type UpstreamCredential =
+  { kind: 'password'; username: string; password: string } | { kind: 'vless'; id: string };
+export type CatalogueEdit = { id: string | null } & (
+  | { kind: 'inbound'; value: ManagedInbound | null }
+  | { kind: 'host'; value: ManagedHost | null }
+  | { kind: 'group'; value: ManagedGroup | null }
+  | {
+      kind: 'upstream';
+      value: ManagedUpstream | null;
+      credential?: UpstreamCredential;
+      clear_credential?: boolean;
+    }
+  | { kind: 'rule'; value: ManagedRule | null }
+);
+export type RoutingQuery = {
+  inbound: string;
+  domain?: string;
+  ip?: string;
+  port: number;
+  network: 'tcp' | 'udp';
+};
+export const routingMatchSchema = z.object({
+  rule: z.string().nullable(),
+  outbound: z.string(),
+  cn_precedence: z.boolean(),
+});
+export type RoutingMatch = z.infer<typeof routingMatchSchema>;
+export const fleetSchema = z.object({
+  local: z.object({ id: z.literal('local'), hostname: z.string().nullable(), version: z.string() }),
+  peers: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      hostname: z.string(),
+      address: z.string(),
+      port: z.number(),
+      last_seen: z.number(),
+      stale: z.boolean(),
+    }),
+  ),
+  grants: z.array(
+    z.object({ id: z.string(), name: z.string(), scope: z.enum(['read', 'manage']) }),
+  ),
+});
+export type Fleet = z.infer<typeof fleetSchema>;
+export type PeerRegistration = {
+  name: string;
+  hostname: string;
+  address: string;
+  port: number;
+  token: string;
+};
+export type PeerGrant = { name: string; scope: 'read' | 'manage' };
+export const panelSchema = z.object({
+  administrator_configured: z.boolean(),
+  session_lifetime: z.number(),
+  session_idle_timeout: z.number(),
+  subscription_enabled: z.boolean(),
+  subscription_access: z.string(),
+  browser_access: z.boolean(),
+  browser_ttl: z.number(),
+});
+export type PanelSettings = z.infer<typeof panelSchema>;
+export const xrayViewSchema = z.object({
+  release: z.string(),
+  configuration: z.record(z.string(), z.unknown()),
+  encrypted: z.boolean(),
+  browser_access: z.boolean(),
+  managed_routing: z.boolean(),
+});
+export type XrayView = z.infer<typeof xrayViewSchema>;
 const node = z
   .object({
     domain: z.string(),
@@ -62,6 +211,7 @@ export const nodeConfigurationSchema = z
       .strict(),
     vless: z.object({ encryption: z.boolean() }).strict().optional(),
     distribution: toggle.optional(),
+    management: catalogueSchema.optional(),
     cn_warp: z
       .object({
         enabled: z.boolean(),
@@ -292,8 +442,20 @@ export const proxyAccessSchema = z.object({
     z.object({
       username: z.string(),
       device_limit: z.number(),
+      groups: z.array(z.string()).default([]),
+      disabled: z.boolean().default(false),
+      expires: z.number().nullable().default(null),
+      quota_bytes: z.number().nullable().default(null),
+      traffic: z
+        .object({ upload: z.number(), download: z.number() })
+        .default({ upload: 0, download: 0 }),
       devices: z.array(
-        z.object({ id: z.string(), label: z.string(), expires: z.number().nullable() }),
+        z.object({
+          id: z.string(),
+          label: z.string(),
+          expires: z.number().nullable(),
+          connections: z.number().default(0),
+        }),
       ),
     }),
   ),
@@ -305,6 +467,15 @@ export type ProxyAccessChange =
   | { action: 'import'; users: z.infer<typeof proxyUsersSchema> }
   | { action: 'delete'; usernames: string[] }
   | { action: 'edit'; username: string; device_limit: number; password?: string }
+  | {
+      action: 'policy';
+      username: string;
+      disabled: boolean;
+      expires: number | null;
+      quota_bytes: number | null;
+    }
+  | { action: 'group-members'; group: string; usernames: string[] }
+  | { action: 'reset-traffic'; username: string }
   | { action: 'create-device'; username: string; label: string }
   | { action: 'delete-device'; device: string };
 
@@ -313,6 +484,7 @@ export const versionsSchema = z.object({
   lookup_failed: z.boolean(),
   releases: z.array(z.string()),
   proxy_access_enabled: z.boolean(),
+  minimum_version: z.string().optional(),
   status: z
     .object({
       target: z.string(),

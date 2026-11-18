@@ -9,7 +9,7 @@ cd /work
 bash tests/integration/admin-localhost.sh
 nodectl renew-hook >/dev/null
 next=$(nodectl render)
-nodectl check "$next" --client /usr/local/bin/xray --client-sha256 "$(sha256sum /usr/local/bin/xray | cut -d ' ' -f 1)" --client-version 26.10.10 --probe-url https://127.0.0.1:9443/ >/dev/null
+nodectl check "$next" --client /usr/local/bin/xray --client-sha256 "$(sha256sum /usr/local/bin/xray | cut -d ' ' -f 1)" --client-version "$(/usr/local/bin/xray version | awk 'NR == 1 {print $2}')" --probe-url https://127.0.0.1:9443/ >/dev/null
 nodectl apply "$next" >/dev/null
 ip4=$(ip -4 -j address show dev eth0 | /integration-target/debug/repo-tools ipv4)
 printf 'no-hosts\nport=1053\nlisten-address=127.0.0.1\nbind-interfaces\nno-resolv\nlocal=/integration.test/\naddress=/integration.test/%s\naddress=/integration.test/::1\nlocal=/localhost/\naddress=/localhost/%s\naddress=/localhost/::1\n' "$ip4" "$ip4" > /root/nodectl-test/admin-dns.conf

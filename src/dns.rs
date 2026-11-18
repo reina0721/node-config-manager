@@ -407,21 +407,20 @@ pub fn verify(c: &Config) -> Result<()> {
             for resolver in &resolvers {
                 let mut query = vec!["+short", "+time=3", "+tries=2", kind, name.as_str()];
                 query.extend(resolver.iter().map(String::as_str));
-                if let Ok(result) = host::command("dig", &query) {
-                    if let Ok(actual) = result
+                if let Ok(result) = host::command("dig", &query)
+                    && let Ok(actual) = result
                         .lines()
                         .filter(|l| !l.trim().is_empty())
                         .map(|l| l.parse::<std::net::IpAddr>())
                         .collect::<std::result::Result<Vec<_>, _>>()
-                    {
-                        if actual == expected {
-                            verified = true;
-                            break;
-                        } else if !actual.is_empty() {
-                            last_err = Some(anyhow::anyhow!(
-                                "Public DNS {kind} for {name} returned {actual:?}, expected {expected:?}"
-                            ));
-                        }
+                {
+                    if actual == expected {
+                        verified = true;
+                        break;
+                    } else if !actual.is_empty() {
+                        last_err = Some(anyhow::anyhow!(
+                            "Public DNS {kind} for {name} returned {actual:?}, expected {expected:?}"
+                        ));
                     }
                 }
             }

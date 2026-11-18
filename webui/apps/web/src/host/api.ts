@@ -9,6 +9,10 @@ import {
   proxyAccessSchema,
   proxyUsersSchema,
   versionsSchema,
+  routingMatchSchema,
+  fleetSchema,
+  panelSchema,
+  xrayViewSchema,
   planViewSchema,
   jobSchema,
   jobResultSchema,
@@ -28,9 +32,19 @@ export class ApiError extends Error {
     super(message);
   }
 }
-export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJob) => void) {
+export function createAdminApi(
+  onUnauthorized: () => void,
+  onJob: (job: ManagedJob) => void,
+  onNode: (node: NodeManagementPort['selectedNode']) => void = () => {},
+) {
   let csrf = '';
-  async function request<T>(path: string, schema: z.ZodType<T>, body?: unknown): Promise<T> {
+  let selected = 'local';
+  async function request<T>(
+    path: string,
+    schema: z.ZodType<T>,
+    body?: unknown,
+    node = selected,
+  ): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 180000);
     try {
@@ -38,8 +52,12 @@ export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJ
         method: body === undefined ? 'GET' : 'POST',
         credentials: 'same-origin',
         cache: 'no-store',
-        headers:
-          body === undefined ? {} : { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        headers: {
+          ...(body === undefined
+            ? {}
+            : { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }),
+          ...(node === 'local' ? {} : { 'X-nodectl-node': node }),
+        },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
       });
@@ -71,12 +89,13 @@ export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJ
     }
   }
   async function watch(path: string, body: unknown): Promise<JobResult> {
-    const task = await request(path, taskSchema, body);
+    const node = selected;
+    const task = await request(path, taskSchema, body, node);
     for (;;) {
-      const job = await request('jobs/' + task.job, jobSchema);
+      const job = await request('jobs/' + task.job, jobSchema, undefined, node);
       const progressResult = job.result ? { ...job.result } : null;
       if (progressResult) delete progressResult.token;
-      onJob({ ...job, result: progressResult });
+      if (node === selected) onJob({ ...job, result: progressResult });
       if (job.finished !== null) {
         if (job.ok !== true)
           throw new ApiError(
@@ -88,7 +107,7 @@ export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJ
       await new Promise<void>((resolve) => setTimeout(resolve, 1000));
     }
   }
-  const port: Omit<NodeManagementPort, 'job'> = {
+  const port: Omit<NodeManagementPort, 'job' | 'selectedNode'> = {
     restoreBackup: (backup, token) => request('backups/preview', planViewSchema, { backup, token }),
     downloadClients,
     versions: () => request('versions', versionsSchema),
@@ -128,6 +147,26 @@ export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJ
       (await request('unlock', z.object({ unlock: z.string() }), { token })).unlock,
     preview: (config, unlock) =>
       request('config/preview', planViewSchema, { config, ...(unlock ? { unlock } : {}) }),
+    previewCatalogue: (edit, base) =>
+      request('catalogue/preview', planViewSchema, { ...edit, base }),
+    matchRoute: (input) => request('routing/match', routingMatchSchema, input),
+    testUpstream: (id) => watch('outbounds/test', { id }),
+    fleet: () => request('fleet', fleetSchema, undefined, 'local'),
+    panel: () => request('panel', panelSchema),
+    xray: () => request('xray', xrayViewSchema),
+    openApi: () => request('openapi', z.record(z.string(), z.unknown())),
+    registerPeer: async (registration) => {
+      await request('fleet/register', z.object({ id: z.string() }), registration, 'local');
+    },
+    grantPeer: async (grant) =>
+      (await request('fleet/grant', z.object({ token: z.string() }), grant, 'local')).token,
+    removePeer: async (id, grant) => {
+      await request('fleet/remove', z.object({ ok: z.boolean() }), { id, grant }, 'local');
+    },
+    selectNode: (id, name) => {
+      selected = id;
+      onNode({ id, name });
+    },
     check: (plan) => watch('config/check', { plan }),
     prepareDeployment: (plan, options) => watch('config/deploy-preview', { plan, options }),
     apply: (plan, confirm) => watch('config/apply', { plan, confirm }),
@@ -141,15 +180,17 @@ export function createAdminApi(onUnauthorized: () => void, onJob: (job: ManagedJ
   return {
     port,
     session: async () => {
-      const s = await request('session', sessionSchema);
+      const s = await request('session', sessionSchema, undefined, 'local');
       csrf = s.csrf;
     },
     login: async (token: string) => {
-      const s = await request('login', sessionSchema, { token });
+      selected = 'local';
+      onNode({ id: 'local', name: '' });
+      const s = await request('login', sessionSchema, { token }, 'local');
       csrf = s.csrf;
     },
     logout: async () => {
-      await request('logout', z.object({ ok: z.boolean() }), {});
+      await request('logout', z.object({ ok: z.boolean() }), {}, 'local');
       csrf = '';
       onUnauthorized();
     },

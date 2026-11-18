@@ -1,9 +1,10 @@
 'use client';
-import { useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useFrontendTranslation } from '@community-go/i18n';
 import { generatedSurfaceRegistry } from '@community-go/surface/generated/composition';
+import { useNodeManagement } from '@community-go/surface/node-management';
 import {
   convertRegistryToShellNavigation,
   navigationIconVocabulary,
@@ -15,40 +16,68 @@ import { Action } from '@community-go/ui-adapter/action';
 import { SkipLink } from '@community-go/ui-adapter/accessibility';
 import { Badge } from '@community-go/ui-adapter/feedback';
 import { useConsoleSession } from '../host/console-runtime';
+const ConsoleSearch = lazy(() => import('./console-search'));
 export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
   const { t } = useFrontendTranslation();
   const pathname = usePathname();
   const session = useConsoleSession();
+  const { selectedNode } = useNodeManagement();
   const groups = useMemo(() => convertRegistryToShellNavigation(generatedSurfaceRegistry), []);
   const [mobile, setMobile] = useState(false);
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const query = search.trim().toLowerCase();
+  const filtered = query
+    ? groups.flatMap((group) => {
+        const items = group.items.filter(
+          (item) =>
+            t(item.labelKey).toLowerCase().includes(query) ||
+            item.id.toLowerCase().includes(query) ||
+            (item.kind === 'branch' &&
+              item.children.some((child) => t(child.labelKey).toLowerCase().includes(query))),
+        );
+        const [first, ...rest] = items;
+        return first ? [{ ...group, items: [first, ...rest] as typeof group.items }] : [];
+      })
+    : groups;
   const path = pathname.replace(/^\/admin(?=\/|$)/, '') || '/dmit';
   const navigation = (close?: () => void) => (
-    <ShellNavigation
-      groups={groups}
-      onNavigate={close}
-      router={{
-        currentPath: path === '/' ? '/dmit' : path,
-        renderLink: (p) => (
-          <Link
-            href={p.href}
-            className={p.className}
-            aria-current={p.current ? 'page' : undefined}
-            {...(p.onNavigate ? { onClick: p.onNavigate } : {})}
-            key={p.href}
-          >
-            {p.children}
-          </Link>
-        ),
-      }}
-      presenter={{
-        translate: (key) => t(key),
-        icon: (iconId) => {
-          const id = navigationIconVocabulary.find((id) => id === iconId);
-          return id ? <NavigationIcon iconId={id} /> : null;
-        },
-      }}
-    />
+    <div className="grid gap-3">
+      <Suspense fallback={<p role="status">{t('nodeShell.loadingSearch')}</p>}>
+        <ConsoleSearch label={t('nodeShell.search')} value={search} onChange={setSearch} />
+      </Suspense>
+      {filtered.length > 0 ? (
+        <ShellNavigation
+          groups={filtered}
+          onNavigate={close}
+          router={{
+            currentPath: path === '/' ? '/dmit' : path,
+            renderLink: (p) => (
+              <Link
+                href={p.href}
+                className={p.className}
+                aria-current={p.current ? 'page' : undefined}
+                {...(p.onNavigate ? { onClick: p.onNavigate } : {})}
+                key={p.href}
+              >
+                {p.children}
+              </Link>
+            ),
+          }}
+          presenter={{
+            translate: (key) => t(key),
+            icon: (iconId) => {
+              const id = navigationIconVocabulary.find((id) => id === iconId);
+              return id ? <NavigationIcon iconId={id} /> : null;
+            },
+          }}
+        />
+      ) : (
+        <p role="status" className="text-sm text-ink-muted">
+          {t('nodeShell.noSearchResults')}
+        </p>
+      )}
+    </div>
   );
   return (
     <>
@@ -90,7 +119,13 @@ export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
                   {navigation(() => setMobile(false))}
                 </DrawerSurface>
               </div>
-              <span className="text-sm text-ink-muted">{t('nodeShell.context')}</span>
+              {selectedNode.id === 'local' ? (
+                <span className="text-sm text-ink-muted">{t('nodeShell.context')}</span>
+              ) : (
+                <Link href="/dmit/fleet" className="text-sm font-semibold text-brand">
+                  {t('nodeShell.remote')} {selectedNode.name}
+                </Link>
+              )}
             </div>
             <div className="flex gap-2">
               <Action variant="quiet" onPress={session.toggleTheme}>

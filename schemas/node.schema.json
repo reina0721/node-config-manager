@@ -37,6 +37,16 @@
         }
       ]
     },
+    "management": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Catalogue"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "node": {
       "$ref": "#/definitions/Node"
     },
@@ -86,6 +96,42 @@
   },
   "additionalProperties": false,
   "definitions": {
+    "Catalogue": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Group"
+          }
+        },
+        "hosts": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Host"
+          }
+        },
+        "inbounds": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Inbound"
+          }
+        },
+        "rules": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Rule"
+          }
+        },
+        "upstreams": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Upstream"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Clients": {
       "type": "object",
       "required": [
@@ -175,6 +221,189 @@
       },
       "additionalProperties": false
     },
+    "Format": {
+      "type": "string",
+      "enum": [
+        "xray",
+        "mihomo"
+      ]
+    },
+    "Group": {
+      "type": "object",
+      "required": [
+        "description",
+        "enabled",
+        "hosts",
+        "inbounds",
+        "name"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "inbounds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Host": {
+      "type": "object",
+      "required": [
+        "addresses",
+        "alpn",
+        "description",
+        "enabled",
+        "fingerprint",
+        "formats",
+        "host_header",
+        "inbound",
+        "mihomo_ip_version",
+        "mihomo_udp",
+        "node",
+        "order",
+        "path",
+        "port",
+        "remark",
+        "sni",
+        "tags"
+      ],
+      "properties": {
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "alpn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "formats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Format"
+          },
+          "uniqueItems": true
+        },
+        "host_header": {
+          "type": "string"
+        },
+        "inbound": {
+          "type": "string"
+        },
+        "mihomo_ip_version": {
+          "$ref": "#/definitions/IpVersion"
+        },
+        "mihomo_udp": {
+          "type": "boolean"
+        },
+        "node": {
+          "type": "string"
+        },
+        "order": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "path": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "remark": {
+          "type": "string"
+        },
+        "sni": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Inbound": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "path",
+        "port",
+        "protocol",
+        "remark"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "protocol": {
+          "$ref": "#/definitions/Protocol"
+        },
+        "remark": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "IpVersion": {
+      "type": "string",
+      "enum": [
+        "dual",
+        "ipv4",
+        "ipv6",
+        "ipv4-prefer",
+        "ipv6-prefer"
+      ]
+    },
+    "Network": {
+      "type": "string",
+      "enum": [
+        "tcp",
+        "udp"
+      ]
+    },
     "Node": {
       "type": "object",
       "required": [
@@ -232,6 +461,22 @@
       },
       "additionalProperties": false
     },
+    "Protocol": {
+      "type": "string",
+      "enum": [
+        "xhttp",
+        "ws",
+        "reality"
+      ]
+    },
+    "Protocol2": {
+      "type": "string",
+      "enum": [
+        "socks5",
+        "https-connect",
+        "vless"
+      ]
+    },
     "Reality": {
       "type": "object",
       "required": [
@@ -244,6 +489,80 @@
         },
         "path": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Rule": {
+      "type": "object",
+      "required": [
+        "domains",
+        "enabled",
+        "inbounds",
+        "ips",
+        "name",
+        "order",
+        "outbound"
+      ],
+      "properties": {
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "inbounds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "ips": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Network"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "order": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "outbound": {
+          "type": "string"
+        },
+        "port_max": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "port_min": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0.0
         }
       },
       "additionalProperties": false
@@ -333,6 +652,40 @@
         },
         "xhttp": {
           "$ref": "#/definitions/Xhttp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Upstream": {
+      "type": "object",
+      "required": [
+        "address",
+        "enabled",
+        "name",
+        "port",
+        "protocol",
+        "server_name"
+      ],
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "protocol": {
+          "$ref": "#/definitions/Protocol2"
+        },
+        "server_name": {
+          "type": "string"
         }
       },
       "additionalProperties": false

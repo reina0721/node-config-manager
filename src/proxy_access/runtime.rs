@@ -9,6 +9,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     fs,
     net::SocketAddr,
     os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
@@ -25,7 +26,7 @@ pub(super) const GATE: SocketAddr =
 pub(super) const BACKEND: &str = "/run/nodectl-proxy-xray/egress.sock";
 const RUNTIME: &str = "/run/nodectl-proxy-access";
 const GENERATED: &str = "/run/nodectl-proxy-access/xray.json";
-const XRAY_CONFIG: &str = "/etc/xray/config.json";
+pub(super) const XRAY_CONFIG: &str = "/etc/xray/config.json";
 const DROP_IN: &str = "/etc/systemd/system/xray.service.d/91-nodectl-proxy-access.conf";
 const SERVICE: &str = "/etc/systemd/system/nodectl-proxy-access.service";
 const MARKER: &str = "# Managed by nodectl proxy access\n";
@@ -258,7 +259,21 @@ pub fn prepare(store: &Store) -> Result<()> {
     );
     let mut json: Value = serde_json::from_slice(&fs::read(source)?)?;
     let pin = RelayIdentity::load(store)?.pin()?;
-    overlay(&config, &database, &mut json, GATE, BACKEND, &pin)?;
+    let probes = config
+        .management
+        .as_ref()
+        .filter(|m| m.hosts.values().any(|h| h.enabled))
+        .map(|_| host::probe_origin(store, &id))
+        .transpose()?;
+    overlay(
+        &config,
+        &database,
+        &mut json,
+        GATE,
+        BACKEND,
+        &pin,
+        probes.as_ref(),
+    )?;
     let dir = Path::new(RUNTIME);
     if !dir.exists() {
         fs::DirBuilder::new().mode(0o750).create(dir)?;
@@ -301,6 +316,48 @@ fn alias(id: uuid::Uuid) -> String {
     format!("device-{}", store::digest(id.as_bytes()))
 }
 
+pub(super) fn managed_tags(config: &Config) -> BTreeMap<String, uuid::Uuid> {
+    config
+        .management
+        .iter()
+        .flat_map(|catalogue| catalogue.active_inbounds())
+        .flat_map(|(id, inbound)| {
+            [(crate::catalogue::tag(id), id)].into_iter().chain(
+                (inbound.protocol == crate::catalogue::Protocol::Reality
+                    && !config.node.ipv6.is_empty())
+                .then(|| (crate::catalogue::ipv6_tag(id), id)),
+            )
+        })
+        .collect()
+}
+
+pub(super) fn ingress_id(device: uuid::Uuid, tag: &str) -> uuid::Uuid {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, device.as_bytes());
+    let signed = ring::hmac::sign(&key, tag.as_bytes());
+    let mut id = [0; 16];
+    id.copy_from_slice(&signed.as_ref()[..16]);
+    uuid::Builder::from_random_bytes(id).into_uuid()
+}
+
+pub(super) fn ingress(config: &Config) -> Vec<String> {
+    if !crate::egress::needs_ingress(config) {
+        return Vec::new();
+    }
+    PUBLIC_TAGS
+        .into_iter()
+        .map(str::to_owned)
+        .chain(managed_tags(config).into_keys())
+        .collect()
+}
+
+pub(super) fn backend_for(path: &Path, ingress: &str) -> std::path::PathBuf {
+    path.with_file_name(format!("{ingress}.sock"))
+}
+
+fn probe_alias(id: uuid::Uuid) -> String {
+    format!("nodectl-managed-host-check-{id}")
+}
+
 pub(super) fn overlay(
     config: &Config,
     database: &Database,
@@ -308,18 +365,30 @@ pub(super) fn overlay(
     gate: SocketAddr,
     backend: &str,
     relay_pin: &str,
+    probe: Option<&(String, u16)>,
 ) -> Result<()> {
     let inbounds = xray["inbounds"]
         .as_array_mut()
         .context("Missing Xray inbounds")?;
     let mut tags = vec![];
+    let managed = managed_tags(config);
+    let ingress_routing = crate::egress::needs_ingress(config);
     let health_email = "nodectl-proxy-health";
+    let hosts = config
+        .management
+        .iter()
+        .flat_map(|m| m.hosts.iter())
+        .filter(|(_, host)| host.enabled && probe.is_some());
+    let host_probes = hosts
+        .map(|(&id, host)| (id, host.inbound.as_str()))
+        .collect::<Vec<_>>();
     for inbound in inbounds.iter_mut() {
         let tag = inbound["tag"]
             .as_str()
             .context("Missing Xray inbound tag")?;
+        let managed_id = managed.get(tag);
         ensure!(
-            PUBLIC_TAGS.contains(&tag) && inbound["protocol"] == "vless",
+            (PUBLIC_TAGS.contains(&tag) || managed_id.is_some()) && inbound["protocol"] == "vless",
             "Unexpected Xray inbound"
         );
         tags.push(tag.to_owned());
@@ -335,7 +404,38 @@ pub(super) fn overlay(
             entry
         };
         let mut accounts = vec![client(database.health_id, health_email)];
-        accounts.extend(database.devices.keys().map(|id| client(*id, &alias(*id))));
+        for &(id, target) in &host_probes {
+            let matches = if let Some(managed_id) = managed_id {
+                target == managed_id.to_string()
+            } else {
+                tag.strip_prefix("vless-")
+                    .map(|kind| kind.trim_end_matches("-ipv6"))
+                    == Some(target)
+            };
+            if matches {
+                accounts.push(client(
+                    crate::catalogue::host_probe_id(database.health_id, id),
+                    &probe_alias(id),
+                ));
+            }
+        }
+        accounts.extend(
+            database
+                .devices
+                .iter()
+                .filter(|(_, device)| {
+                    managed_id.is_none_or(|managed_id| {
+                        database.users.get(&device.username).is_some_and(|account| {
+                            config
+                                .management
+                                .as_ref()
+                                .unwrap()
+                                .granted(&account.groups, *managed_id)
+                        })
+                    })
+                })
+                .map(|(id, _)| client(*id, &alias(*id))),
+        );
         inbound["settings"]["clients"] = json!(accounts);
     }
     ensure!(tags.len() >= 3, "Incomplete managed Xray inbounds");
@@ -343,10 +443,31 @@ pub(super) fn overlay(
     // Re-enter Xray after the relay so its original direct/CN routing and UDP
     // handling apply to the destination, without replicating either in Rust.
     const BACK_TAG: &str = "nodectl-proxy-egress";
-    inbounds.push(json!({
-        "tag":BACK_TAG,"protocol":"vless","listen":format!("{backend},0600"),
-        "settings":{"clients":database.devices.values().map(|d| json!({"id":d.transit})).collect::<Vec<_>>(),"decryption":"none"}
-    }));
+    let mut backend_tags = Vec::new();
+    if ingress_routing {
+        for tag in &tags {
+            let ingress = managed.get(tag).map_or_else(
+                || {
+                    tag.trim_start_matches("vless-")
+                        .trim_end_matches("-ipv6")
+                        .to_owned()
+                },
+                |id| id.to_string(),
+            );
+            let path = backend_for(Path::new(backend), tag);
+            let private_tag = format!("egress-{tag}");
+            inbounds.push(json!({
+                "tag":private_tag,"protocol":"vless","listen":format!("{},0600", path.display()),
+                "settings":{"clients":database.devices.values().map(|d| json!({"id":ingress_id(d.transit, tag)})).collect::<Vec<_>>(),"decryption":"none"}
+            }));
+            backend_tags.push((ingress, private_tag));
+        }
+    } else {
+        inbounds.push(json!({
+            "tag":BACK_TAG,"protocol":"vless","listen":format!("{backend},0600"),
+            "settings":{"clients":database.devices.values().map(|d| json!({"id":d.transit})).collect::<Vec<_>>(),"decryption":"none"}
+        }));
+    }
     let outbounds = xray["outbounds"]
         .as_array_mut()
         .context("Missing Xray outbounds")?;
@@ -359,18 +480,32 @@ pub(super) fn overlay(
         let user = alias(*id);
         let portal = format!("portal-{user}");
         let transit = format!("transit-{user}");
-        for (tag, account) in [(&portal, device.portal), (&transit, device.transit)] {
+        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":PORT.to_string(),
+            "domain":[format!("full:{}",config.node.domain)],"outboundTag":portal}));
+        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":PORT.to_string(),
+            "ip":destination_ip,"outboundTag":portal}));
+        let mut relays = vec![(portal.clone(), device.portal)];
+        if ingress_routing {
+            for tag in &tags {
+                let relay = format!("{transit}-{tag}");
+                rules.push(
+                    json!({"type":"field","inboundTag":[tag],"user":[user],"outboundTag":relay}),
+                );
+                relays.push((relay, ingress_id(device.transit, tag)));
+            }
+        } else {
+            rules.push(
+                json!({"type":"field","inboundTag":tags,"user":[user],"outboundTag":transit}),
+            );
+            relays.push((transit, device.transit));
+        }
+        for (tag, account) in relays {
             outbounds.push(json!({"tag":tag,"protocol":"vless","streamSettings":{"security":"tls","tlsSettings":{
                 "minVersion":"1.3","pinnedPeerCertSha256":relay_pin
             }},"settings":{"vnext":[{
                 "address":gate.ip().to_string(),"port":gate.port(),"users":[{"id":account,"encryption":"none"}]
             }]}}));
         }
-        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":PORT.to_string(),
-            "domain":[format!("full:{}",config.node.domain)],"outboundTag":portal}));
-        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":PORT.to_string(),
-            "ip":destination_ip,"outboundTag":portal}));
-        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"outboundTag":transit}));
     }
     // Existing rules are only reachable from the private egress or the
     // protected health identity. No shared subscription UUID survives.
@@ -383,16 +518,45 @@ pub(super) fn overlay(
     }
     for rule in &old {
         if rule["inboundTag"].is_array() {
+            // The snapshot locks additional listeners when the relay does not run.
+            if rule["outboundTag"] == "block"
+                && rule["inboundTag"].as_array().is_some_and(|tags| {
+                    !tags.is_empty()
+                        && tags
+                            .iter()
+                            .all(|tag| tag.as_str().is_some_and(|tag| managed.contains_key(tag)))
+                })
+            {
+                continue;
+            }
             rules.push(rule.clone());
         } else {
             let mut rule = rule.clone();
-            rule["inboundTag"] = json!([BACK_TAG]);
+            rule["inboundTag"] = if ingress_routing {
+                json!(backend_tags.iter().map(|(_, tag)| tag).collect::<Vec<_>>())
+            } else {
+                json!([BACK_TAG])
+            };
             rules.push(rule.clone());
             let mut probe = rule;
             probe["inboundTag"] = json!(tags);
             probe["user"] = json!([health_email]);
             rules.push(probe);
         }
+    }
+    if ingress_routing {
+        // Resolve an IP criterion when evaluating its position in the list.
+        xray["routing"]["domainStrategy"] = json!("IPOnDemand");
+        rules.extend(crate::egress::routing(config, &backend_tags));
+    }
+    if let Some((target, port)) = probe {
+        let mut rule = json!({"type":"field", "inboundTag":tags,"user":host_probes.iter().map(|(id, _)| probe_alias(*id)).collect::<Vec<_>>(),"network":"tcp","port":port.to_string(),"outboundTag":"direct"});
+        if target.parse::<std::net::IpAddr>().is_ok() {
+            rule["ip"] = json!([target]);
+        } else {
+            rule["domain"] = json!([format!("full:{target}")]);
+        }
+        rules.push(rule);
     }
     rules.push(
         json!({"type":"field","inboundTag":tags,"user":[health_email],"outboundTag":"direct"}),

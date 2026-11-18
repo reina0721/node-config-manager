@@ -13,7 +13,7 @@ NODECTL_ADMIN_TEST=isolated bash tests/integration/admin-localhost.sh
 /integration-target/debug/repo-tools probe > /root/nodectl-test/admin-probe.log 2>&1 &
 printf '%s\n' "$!" > /root/nodectl-test/admin-probe.pid
 release=$(nodectl render)
-nodectl check "$release" --client /usr/local/bin/xray --client-sha256 "$(sha256sum /usr/local/bin/xray | cut -d ' ' -f 1)" --client-version 26.10.10 --probe-url https://127.0.0.1:9443/ >/dev/null
+nodectl check "$release" --client /usr/local/bin/xray --client-sha256 "$(sha256sum /usr/local/bin/xray | cut -d ' ' -f 1)" --client-version "$(/usr/local/bin/xray version | awk 'NR == 1 {print $2}')" --probe-url https://127.0.0.1:9443/ >/dev/null
 nodectl takeover "$release" >/dev/null
 nodectl apply "$release" > /root/nodectl-test/admin-node-apply.log
 ip4=$(ip -4 -j address show dev eth0 | /integration-target/debug/repo-tools ipv4)

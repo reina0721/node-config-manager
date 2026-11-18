@@ -34,7 +34,9 @@ model!(Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cn_warp: Option<CnWarp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    web_services: Option<WebServices>
+    web_services: Option<WebServices>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    management: Option<crate::catalogue::Catalogue>
 });
 model!(CnWarp {
     enabled: bool,
@@ -139,6 +141,8 @@ pub struct Secrets {
     pub reality_short_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vless: Option<EncryptionSecrets>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub upstreams: BTreeMap<Uuid, crate::egress::Credential>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -210,6 +214,9 @@ impl Secrets {
                 values.push(&keys.pair(kind).decryption);
                 values.push(&keys.pair(kind).encryption);
             }
+        }
+        for credential in self.upstreams.values() {
+            values.extend(credential.sensitive());
         }
         values
     }
@@ -594,6 +601,8 @@ pub fn validate(c: &Config, s: &Secrets) -> Result<()> {
         total > 0 && total <= 1000,
         "Fingerprint weights must total 1–1000"
     );
+    crate::catalogue::validate(c)?;
+    crate::egress::validate(c, s)?;
     Ok(())
 }
 
@@ -626,7 +635,9 @@ pub fn encryption_keys(c: &Config, s: &mut Secrets) -> Result<()> {
     let lock: toml::Value = toml::from_str(include_str!("../versions.lock.toml"))?;
     let expected = lock["xray"]["version"].as_str().unwrap_or("26.10.21");
     ensure!(
-        version.split_whitespace().any(|v| v == expected || v == "26.10.10"),
+        version
+            .split_whitespace()
+            .any(|v| v == expected || v == "26.10.10"),
         "Encryption key generation requires locked Xray {expected}"
     );
     let pair = || -> Result<EncryptionPair> {
