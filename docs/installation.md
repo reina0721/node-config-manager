@@ -41,10 +41,10 @@ sudo sh node-config-manager-setup.sh --install-only --version v0.6.4 --execute
 
 从发布了该功能的 v0.7.0 起，打开 **运维中心 → nodectl 版本管理**，选择或输入正式版标签。高于当前版本时升级，相同版本时重新安装，低于当前版本时回退。切换会下载签名归档、校验目标版本能读取当前及上一节点快照，然后一起激活程序、API 与静态后台。API 会短暂重启，完成后刷新网页并使用原管理员 Token 登录。后台展示最后一次切换状态，服务端日志可通过 `journalctl -u nodectl-admin-version-switch` 查看。
 
-网页切换的最低目标为 v0.6.5。启用浏览器认证时，最低目标为 v0.7.0。v0.6.5 的发布程序只能读取它支持的节点快照。目标不兼容时，切换在替换程序前停止。仓库改名前 v0.6.1–v0.6.5 的归档从当前仓库下载，验签固定使用各版本发行时的工作流身份。
+网页切换的最低目标为 v0.6.5。启用浏览器认证时，最低目标为 v0.7.1，程序版本变更时会重新加载认证服务。v0.6.5 的发布程序只能读取它支持的节点快照。目标不兼容时，切换在替换程序前停止。仓库改名前 v0.6.1–v0.6.5 的归档从当前仓库下载，验签固定使用各版本发行时的工作流身份。
 
 从 v0.6.5 首次升级到具备网页切换的版本，或回退到 v0.6.5 后再次升级，需要先通过 SSH 安装新版控制台。正式资产发布后，用新版 `install.sh` 执行，端口填写已有后台的 HTTPS 端口。
 
 ```sh
-sudo sh node-config-manager-setup.sh --switch-admin --version v0.7.0 --admin-port 9443 --execute
+sudo sh node-config-manager-setup.sh --switch-admin --version v0.7.1 --admin-port 9443 --execute
 ```

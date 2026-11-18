@@ -95,11 +95,21 @@ flock -n 9 || die 'Another installation is running'
 work=$(mktemp -d "$PREFIX/lib/nodectl/.install-XXXXXXXX")
 stage=
 switch_pending=no
+restart_proxy=no
+restart_proxy_service() {
+  [ "$restart_proxy" = no ] || systemctl restart nodectl-proxy-access
+}
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
   if [ "$switch_pending" = yes ]; then
-    if restore_binary && systemctl restart nodectl-admin nodectl-admin-nginx; then
+    recovered=no
+    if restore_binary; then
+      recovered=yes
+      restart_proxy_service || recovered=no
+      systemctl restart nodectl-admin nodectl-admin-nginx || recovered=no
+    fi
+    if [ "$recovered" = yes ]; then
       printf '%s\n' 'Console activation failed; previous executable and services restored.' >&2
     else
       printf '%s\n' 'Console recovery failed; inspect the service journal and retained executable.' >&2
@@ -204,6 +214,9 @@ if [ "$MODE" = switch-admin ]; then
   done
   # Validate the matching archive and existing console before replacing the CLI.
   "$work/nodectl" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" admin install --archive "$work/$ASSET" --port "$ADMIN_PORT" >/dev/null
+  if [ "$old_hash" != "$new_hash" ] && systemctl is-enabled --quiet nodectl-proxy-access; then
+    restart_proxy=yes
+  fi
 fi
 stage=$(mktemp "$PREFIX/bin/.nodectl-XXXXXXXX")
 install -m 0755 "$work/nodectl" "$stage"
@@ -214,6 +227,7 @@ sync -f "$PREFIX/bin"
 stage=
 printf 'Installed %s at %s\n' "$VERSION" "$dest"
 if [ "$MODE" = switch-admin ]; then
+  restart_proxy_service
   "$dest" --config-dir "$CONFIG_DIR" --state-dir "$STATE_DIR" admin install --archive "$work/$ASSET" --port "$ADMIN_PORT" --execute
   switch_pending=no
 fi

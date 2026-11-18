@@ -307,7 +307,7 @@ fn response(status: u16, reason: &str, message: &str) -> String {
         r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>nodectl 节点认证</title><main><h1>节点认证</h1><p role="status">{message}</p><form method="post" action="/"><p><label>用户名 <input name="username" autocomplete="username" required maxlength="64"></label></p><p><label>密码 <input type="password" name="password" autocomplete="current-password" required maxlength="256"></label></p><button>登录</button></form></main></html>"#
     );
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: same-origin\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'\r\n\r\n{body}",
         body.len()
     )
 }

@@ -16,7 +16,7 @@ const REPOSITORY: &str = "reina0721/node-config-manager";
 const UNIT: &str = "nodectl-admin-version-switch";
 const TIME_LIMIT: u64 = 30 * 60;
 const WEB_MINIMUM: [u64; 3] = [0, 6, 5];
-const ACCESS_MINIMUM: [u64; 3] = [0, 7, 0];
+const ACCESS_MINIMUM: [u64; 3] = [0, 7, 1];
 
 #[derive(Serialize, Deserialize)]
 struct Switch {

@@ -364,6 +364,23 @@ async fn real_xray_denies_unauthenticated_traffic_and_revokes_existing_connectio
             .success()
     );
     assert_reply(curl(Some(socks), portal_args.clone()).await?, "节点认证");
+    // A no-referrer policy would serialize a browser navigation POST's Origin
+    // as null. Keep the same-origin form compatible with the strict check.
+    let mut page_headers = portal_args.clone();
+    page_headers.extend(["--dump-header".into(), "-".into()]);
+    assert_reply(
+        curl(Some(socks), page_headers).await?,
+        "Referrer-Policy: same-origin\r\n",
+    );
+    let mut foreign_login = portal_args.clone();
+    foreign_login.extend([
+        "-H".into(),
+        "Origin: null".into(),
+        "-d".into(),
+        "username=alice&password=test-password".into(),
+    ]);
+    assert_reply(curl(Some(socks), foreign_login).await?, "页面不存在");
+    assert!(!curl(Some(socks), target()).await?.status.success());
     let mut login = portal_args.clone();
     login.extend([
         "-H".into(),

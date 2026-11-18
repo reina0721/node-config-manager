@@ -25,7 +25,7 @@ export default function VersionPanel({
   const t = useNodeText();
   const [version, setVersion] = useState('');
   const valid = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version);
-  const minimum = data?.proxy_access_enabled ? 'v0.7.0' : 'v0.6.5';
+  const minimum = data?.proxy_access_enabled ? 'v0.7.1' : 'v0.6.5';
   const pending = Boolean(data?.status && data.status.finished === null);
   const direction = valid && data ? compareVersions(version, data.running) : 0;
   const action = direction < 0 ? 'rollbackVersion' : direction > 0 ? 'upgrade' : 'update';

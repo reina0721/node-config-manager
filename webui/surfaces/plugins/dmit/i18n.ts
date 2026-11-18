@@ -275,7 +275,7 @@ const zh = {
     upgradeVersion: '目标版本（v0.6.5 或更新版本）',
     upgradeRisk: '验签后同时切换程序和对应后台页面。后台会短暂重启，完成后请刷新页面并重新登录。',
     lookupFailed: 'GitHub 暂时无法返回发行列表。可以手动输入正式版标签。',
-    authVersion: '启用浏览器认证时，版本下限为 v0.7.0。',
+    authVersion: '启用浏览器认证时，版本下限为 v0.7.1。',
     switchPending: '正在切换版本',
     switchComplete: '版本切换完成',
     switchFailed: '版本切换失败，请查看系统日志 nodectl-admin-version-switch。',
