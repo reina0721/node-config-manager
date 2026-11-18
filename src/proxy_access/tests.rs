@@ -118,7 +118,7 @@ fn subscriptions_follow_the_device_and_are_revoked_without_disabling_the_service
     };
     let first = token(id)?;
     let second_token = token(second)?;
-    for format in ["xray", "mihomo"] {
+    for format in ["xray", "mihomo", "mihomo-weighted"] {
         let response = get(&format!("/nodes/sub/{format}"), &first)?;
         assert!(response.starts_with("HTTP/1.1 200"));
         assert_eq!(
@@ -129,6 +129,11 @@ fn subscriptions_follow_the_device_and_are_revoked_without_disabling_the_service
         assert!(!response.contains(&db.devices[&id].portal.to_string()));
     }
     assert!(get("/nodes/api", &second_token)?.contains(&second.to_string()));
+    let weighted: Value = serde_json::from_str(&profile(&store, id, "mihomo-weighted")?)?;
+    assert_eq!(
+        weighted["proxy-groups"][1]["url"],
+        format!("{}/", runtime::portal(&c))
+    );
     assert!(get("/nodes/api", &first[32..].repeat(2))?.starts_with("HTTP/1.1 401"));
     crate::share::rotate(&store, None)?;
     assert!(get("/nodes/api", &first)?.starts_with("HTTP/1.1 401"));
@@ -139,6 +144,7 @@ fn subscriptions_follow_the_device_and_are_revoked_without_disabling_the_service
     access.write(&db)?;
     drop(guard);
     assert!(get("/nodes/api", &fresh)?.starts_with("HTTP/1.1 401"));
+    assert!(get("/nodes/sub/mihomo-weighted", &fresh)?.starts_with("HTTP/1.1 401"));
     let unaffected = token(second)?;
     assert!(get("/nodes/api", &unaffected)?.starts_with("HTTP/1.1 200"));
     crate::share::revoke(&store)?;

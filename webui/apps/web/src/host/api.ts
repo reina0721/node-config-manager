@@ -14,6 +14,7 @@ import {
   jobResultSchema,
   serviceSchema,
   type NodeManagementPort,
+  type ClientExportFormat,
   type ManagedJob,
   type JobResult,
 } from '@community-go/surface/node-management';
@@ -164,10 +165,10 @@ function download(name: string, type: string, content: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function downloadClients(format: 'xray' | 'mihomo', content: string) {
+function downloadClients(format: ClientExportFormat, content: string) {
   const xray = format === 'xray';
   download(
-    xray ? 'nodectl-xray.json' : 'nodectl-mihomo.yaml',
+    xray ? 'nodectl-xray.json' : 'nodectl-' + format + '.yaml',
     xray ? 'application/json' : 'text/yaml',
     content,
   );

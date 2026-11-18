@@ -4,7 +4,11 @@ import { Section } from '@community-go/surface-foundation/layout';
 import { DataTable } from '@community-go/ui-adapter/data-display';
 import { Action } from '@community-go/ui-adapter/action';
 import { AlertBanner } from '@community-go/ui-adapter/feedback';
-import { useNodeManagement, type JobResult } from '../../../src/node-management';
+import {
+  useNodeManagement,
+  type ClientExportFormat,
+  type JobResult,
+} from '../../../src/node-management';
 import {
   NodePage,
   Details,
@@ -23,10 +27,10 @@ export default function NodesPage() {
   const t = useNodeText();
   const [result, setResult] = useState<JobResult | null>(null);
   const [content, setContent] = useState('');
-  const [format, setFormat] = useState<'xray' | 'mihomo'>('xray');
+  const [format, setFormat] = useState<ClientExportFormat>('xray');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const exportClients = async (format: 'xray' | 'mihomo') => {
+  const exportClients = async (format: ClientExportFormat) => {
     setLoading(true);
     try {
       setContent(await api.exportClients(format));
@@ -130,6 +134,16 @@ export default function NodesPage() {
               }}
             >
               {t('nodes.mihomo')}
+            </Action>
+            <Action
+              variant="secondary"
+              disabled={!q.data || loading}
+              loading={loading}
+              onPress={() => {
+                void exportClients('mihomo-weighted');
+              }}
+            >
+              {t('nodes.mihomoWeighted')}
             </Action>
           </div>
           {content ? (

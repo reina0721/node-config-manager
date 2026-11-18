@@ -499,6 +499,7 @@ pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {
             "token": token,
             "node_page": format!("{origin}/nodes/"),
             "mihomo": format!("{origin}/nodes/sub/mihomo?token={token}"),
+            "mihomo-weighted": format!("{origin}/nodes/sub/mihomo-weighted?token={token}"),
             "xray": format!("{origin}/nodes/sub/xray?token={token}"),
             "browser_login": runtime::portal(&config),
         }))?);
@@ -562,6 +563,9 @@ pub(crate) fn render_profile(
             config, &secrets,
         )?)?),
         "mihomo" => crate::render::mihomo(config, &secrets),
+        "mihomo-weighted" => {
+            crate::render::mihomo_weighted(config, &secrets, Some(&runtime::portal(config)))
+        }
         _ => anyhow::bail!("bad_request"),
     }
 }

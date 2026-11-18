@@ -20,6 +20,7 @@ import type {
   VersionsView,
 } from './node-model';
 export * from './node-model';
+export type ClientExportFormat = 'xray' | 'mihomo' | 'mihomo-weighted';
 export type NodeManagementPort = Readonly<{
   overview: () => Promise<NodeOverview>;
   configuration: () => Promise<ConfigurationView>;
@@ -35,7 +36,7 @@ export type NodeManagementPort = Readonly<{
   importProxyUsers: () => Promise<ProxyAccess | null>;
   downloadProxyProfile: (
     device: string,
-    format: 'xray' | 'mihomo' | 'subscriptions',
+    format: ClientExportFormat | 'subscriptions',
   ) => Promise<void>;
   unlock: (token: string) => Promise<string>;
   preview: (config: NodeConfiguration, unlock?: string) => Promise<ConfigPlan>;
@@ -45,8 +46,8 @@ export type NodeManagementPort = Readonly<{
   apply: (plan: string, confirm: string) => Promise<JobResult>;
   operate: (input: OperationInput) => Promise<JobResult>;
   credentials: (zone: string, token: string) => Promise<void>;
-  exportClients: (format: 'xray' | 'mihomo') => Promise<string>;
-  downloadClients: (format: 'xray' | 'mihomo', content: string) => void;
+  exportClients: (format: ClientExportFormat) => Promise<string>;
+  downloadClients: (format: ClientExportFormat, content: string) => void;
   job: ManagedJob | null;
 }>;
 const Context = createContext<NodeManagementPort | null>(null);

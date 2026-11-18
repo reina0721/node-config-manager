@@ -210,7 +210,7 @@ fn reveal(store: &Store) -> Result<()> {
             } else {
                 format!(":{}", c.ports.https)
             };
-            for format in ["mihomo", "xray"] {
+            for format in ["mihomo", "mihomo-weighted", "xray"] {
                 writeln!(
                     tty,
                     "Private {format} subscription: https://{}{port}/nodes/sub/{format}?token={}",
@@ -249,7 +249,7 @@ pub(crate) fn deployment_result(store: &Store) -> Result<()> {
         return Ok(());
     }
     println!(
-        "Node page: {origin}/nodes/\nSubscription templates (replace locally; keep private):\n  {origin}/nodes/sub/mihomo?token=<ACCESS_TOKEN>\n  {origin}/nodes/sub/xray?token=<ACCESS_TOKEN>\nFormats: Mihomo provider and Xray outbound profiles\nProtected access credential: {}\nRecover access: nodectl share reveal\nRotate: nodectl share rotate\nRevoke: nodectl share revoke",
+        "Node page: {origin}/nodes/\nSubscription templates (replace locally; keep private):\n  {origin}/nodes/sub/mihomo?token=<ACCESS_TOKEN>\n  {origin}/nodes/sub/mihomo-weighted?token=<ACCESS_TOKEN>\n  {origin}/nodes/sub/xray?token=<ACCESS_TOKEN>\nFormats: Mihomo provider, weighted Mihomo profile and Xray outbound profiles\nProtected access credential: {}\nRecover access: nodectl share reveal\nRotate: nodectl share rotate\nRevoke: nodectl share revoke",
         credential_path(store).display()
     );
     let mut record = read(store)?;
@@ -395,6 +395,7 @@ pub(crate) fn subscription_profiles(
     let bytes = match format {
         "xray" => fs::read(store.release(&id)?.join("clients/profiles.json"))?,
         "mihomo" => crate::render::mihomo(&c, &s)?,
+        "mihomo-weighted" => crate::render::mihomo_weighted(&c, &s, None)?,
         _ => anyhow::bail!("Unsupported client format"),
     };
     ensure!(bytes.len() <= 1024 * 1024, "Client response too large");

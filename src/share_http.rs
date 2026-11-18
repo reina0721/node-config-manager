@@ -164,9 +164,12 @@ fn route(
         _ => {}
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    if !["/nodes/api", "/nodes/sub/xray", "/nodes/sub/mihomo"].contains(&path) {
-        return error(stream, 404);
-    }
+    let format = match path {
+        "/nodes/api" | "/nodes/sub/xray" => "xray",
+        "/nodes/sub/mihomo" => "mihomo",
+        "/nodes/sub/mihomo-weighted" => "mihomo-weighted",
+        _ => return error(stream, 404),
+    };
     let bearer = header(request, "authorization")?.and_then(|v| v.strip_prefix("Bearer "));
     let query_token = query.strip_prefix("token=").filter(|v| !v.contains('&'));
     if (!query.is_empty() && query_token.is_none())
@@ -197,18 +200,13 @@ fn route(
         }
         None
     };
-    let format = if path.ends_with("mihomo") {
-        "mihomo"
-    } else {
-        "xray"
-    };
     let Ok((id, bytes)) = share::subscription_profiles(store, format, device) else {
         return error(stream, 503);
     };
     if path == "/nodes/api" {
         let profiles: serde_json::Value = serde_json::from_slice(&bytes)?;
         let body = serde_json::to_vec(&json!({"release":id,"clients":profiles,
-            "subscriptions":{"xray":format!("/nodes/sub/xray?token={token}"),"mihomo":format!("/nodes/sub/mihomo?token={token}")}}))?;
+            "subscriptions":{"xray":format!("/nodes/sub/xray?token={token}"),"mihomo":format!("/nodes/sub/mihomo?token={token}"),"mihomo-weighted":format!("/nodes/sub/mihomo-weighted?token={token}")}}))?;
         response(stream, 200, "application/json; charset=utf-8", &body)
     } else {
         // JSON is also a valid YAML provider and preserves renderer bytes.
@@ -402,7 +400,7 @@ mod tests {
         assert!(get(&store, "/nodes/api", None).starts_with("HTTP/1.1 401"));
         assert!(get(&store, "/nodes/api", Some(&first)).starts_with("HTTP/1.1 503"));
         let id = deployed(&store);
-        for format in ["xray", "mihomo"] {
+        for format in ["xray", "mihomo", "mihomo-weighted"] {
             let response = get(&store, &format!("/nodes/sub/{format}?token={first}"), None);
             assert!(response.starts_with("HTTP/1.1 200"));
             let body = response.split_once("\r\n\r\n").unwrap().1;
@@ -425,6 +423,49 @@ mod tests {
         // Neither pointer rollback nor a legacy successful snapshot restores access.
         store.set_pointer("current", Some(&id)).unwrap();
         assert!(get(&store, "/nodes/api", Some(&second)).starts_with("HTTP/1.1 401"));
+    }
+    #[test]
+    fn weighted_subscription_tracks_the_applied_release_and_preserves_node_definitions() {
+        let (_tmp, store) = crate::tests::sandbox();
+        drop(store.lock().unwrap());
+        share::rotate(&store, None).unwrap();
+        let token = token(&store);
+        deployed(&store);
+        let profile = || -> serde_json::Value {
+            let response = get(&store, "/nodes/sub/mihomo-weighted", Some(&token));
+            assert!(response.starts_with("HTTP/1.1 200"));
+            serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+        };
+        let counts = |profile: &serde_json::Value| {
+            let group = &profile["proxy-groups"][1];
+            assert_eq!(group["strategy"], "round-robin");
+            let slots = group["proxies"].as_array().unwrap();
+            ["xhttp-", "ws", "reality"].map(|prefix| {
+                slots
+                    .iter()
+                    .filter(|name| name.as_str().unwrap().starts_with(prefix))
+                    .count()
+                    * 100
+                    / slots.len()
+            })
+        };
+        let baseline = profile();
+        assert_eq!(counts(&baseline), [80, 15, 5]);
+        let (mut config, _) = store.inputs().unwrap();
+        config.clients.xhttp_weight = 0;
+        config.clients.ws_weight = 30;
+        config.clients.reality_weight = 70;
+        store::atomic_write(
+            &store.config_dir.join("node.toml"),
+            toml::to_string_pretty(&config).unwrap().as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(counts(&profile()), [80, 15, 5]);
+        deployed(&store);
+        let updated = profile();
+        assert_eq!(counts(&updated), [0, 30, 70]);
+        assert_eq!(updated["proxies"], baseline["proxies"]);
+        assert_eq!(updated["proxy-groups"][0], baseline["proxy-groups"][0]);
     }
     #[test]
     fn invalid_requests_are_generic_uncached_and_never_echo_credentials() {

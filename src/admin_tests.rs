@@ -168,6 +168,9 @@ fn backend_rejects_protected_changes_and_binds_review_to_session_and_bytes() {
     let (mut c, _) = app.store.inputs().unwrap();
     c.clients.xhttp_weight = 75;
     c.clients.ws_weight = 20;
+    let (safe, _) = call(&app, "config/preview", &h, json!({"config":c})).unwrap();
+    assert_eq!(safe["advanced"], false);
+    c.clients.fingerprint_weights.insert("chrome".into(), 1);
     assert_eq!(
         call(&app, "config/preview", &h, json!({"config":c}))
             .unwrap_err()

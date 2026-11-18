@@ -58,8 +58,8 @@ test('Rust 强制保护、高级差异检查应用、备份恢复与回滚保持
     '/etc/dmit-node/secrets.json',
   ]);
   const candidate = structuredClone(before.config);
-  candidate.clients.xhttp_weight -= 1;
-  candidate.clients.ws_weight += 1;
+  candidate.clients.fingerprint_weights.chrome =
+    (candidate.clients.fingerprint_weights.chrome ?? 0) + 1;
   expect(
     z.object({ error: z.string() }).parse(await post('config/preview', { config: candidate }, 403))
       .error,

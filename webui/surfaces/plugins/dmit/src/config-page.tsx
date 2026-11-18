@@ -12,6 +12,8 @@ import {
   type ConfigPlan,
 } from '../../../src/node-management';
 import { NodePage, Details, JobProgress, useNodeQuery, useNodeText } from './common';
+const weightFields = ['xhttp_weight', 'ws_weight', 'reality_weight'] as const;
+
 function ConfigEditor({
   view,
   refresh,
@@ -20,6 +22,9 @@ function ConfigEditor({
   const t = useNodeText();
   const [draft, setDraft] = useState(view.config);
   const [aliases, setAliases] = useState(view.config.node.aliases.join('\n'));
+  const [weights, setWeights] = useState(() =>
+    weightFields.map((field) => String(view.config.clients[field])),
+  );
   const [token, setToken] = useState('');
   const [ticket, setTicket] = useState<string | undefined>();
   const [advanced, setAdvanced] = useState(false);
@@ -27,6 +32,18 @@ function ConfigEditor({
   const [plan, setPlan] = useState<ConfigPlan | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const weightsValid =
+    weights.every((weight) => /^\d{1,3}$/.test(weight)) &&
+    weights.reduce((sum, weight) => sum + Number(weight), 0) === 100;
+  const withWeights = () => ({
+    ...draft,
+    clients: {
+      ...draft.clients,
+      xhttp_weight: Number(weights[0]),
+      ws_weight: Number(weights[1]),
+      reality_weight: Number(weights[2]),
+    },
+  });
   const changed = () => {
     setPlan(null);
     setError('');
@@ -45,7 +62,7 @@ function ConfigEditor({
   };
   const preview = () =>
     run(async () => {
-      let candidate = draft;
+      let candidate = withWeights();
       if (advanced) {
         try {
           candidate = nodeConfigurationSchema.parse(JSON.parse(raw));
@@ -57,6 +74,7 @@ function ConfigEditor({
       setTicket(undefined);
       const next = await api.preview(candidate, grant);
       setDraft(candidate);
+      setWeights(weightFields.map((field) => String(candidate.clients[field])));
       setPlan(next);
     });
   return (
@@ -99,6 +117,33 @@ function ConfigEditor({
             }}
           />
         </div>
+      </Section>
+      <Section
+        title={t('config.protocolWeights')}
+        description={t('config.weightHint')}
+        contentInset
+      >
+        <div className="grid gap-5 md:grid-cols-3">
+          {weightFields.map((field, index) => (
+            <TextField
+              key={field}
+              label={t('config.' + field)}
+              value={weights[index] ?? ''}
+              disabled={advanced || pending}
+              onChange={(e) => {
+                changed();
+                setWeights(
+                  weights.map((weight, position) => (position === index ? e.target.value : weight)),
+                );
+              }}
+            />
+          ))}
+        </div>
+        {!advanced && !weightsValid ? (
+          <p role="status" className="mt-3 text-sm text-danger">
+            {t('config.weightError')}
+          </p>
+        ) : null}
       </Section>
       <Section
         title={t('config.baseline')}
@@ -145,14 +190,14 @@ function ConfigEditor({
           <div>
             <Action
               variant="secondary"
-              disabled={!token || pending}
+              disabled={!token || pending || (!advanced && !weightsValid)}
               loading={pending}
               onPress={() => {
                 void run(async () => {
                   const grant = await api.unlock(token);
                   setToken('');
                   setTicket(grant);
-                  if (!advanced) setRaw(JSON.stringify(draft, null, 2));
+                  if (!advanced) setRaw(JSON.stringify(withWeights(), null, 2));
                   setAdvanced(true);
                   changed();
                 }).catch(() => {});
@@ -181,7 +226,7 @@ function ConfigEditor({
       <div className="flex flex-wrap gap-3">
         <Action
           loading={pending}
-          disabled={pending || (advanced && !ticket)}
+          disabled={pending || (advanced ? !ticket : !weightsValid)}
           onPress={() => {
             void preview().catch(() => {});
           }}

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3
+
+- 配置中心可调整 XHTTP、WebSocket 和 REALITY 的分流比例。新增按比例分流的 Mihomo 完整配置及设备订阅。
+
 ## 0.7.2
 
 - 浏览器认证与节点分发可以同时使用。管理员可下载绑定到单台设备的 Mihomo 和 Xray 订阅。

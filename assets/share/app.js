@@ -39,7 +39,11 @@ element('open').addEventListener('click', async () => {
       element('nodes').append(item);
     }
     element('formats').replaceChildren();
-    for (const [format, label, filename] of [['mihomo', 'Mihomo', 'proxies.yaml'], ['xray', 'Xray', 'profiles.json']]) {
+    for (const [format, label, filename] of [
+      ['mihomo', 'Mihomo', 'proxies.yaml'],
+      ['mihomo-weighted', 'Mihomo 按比例分流', 'nodectl-mihomo-weighted.yaml'],
+      ['xray', 'Xray', 'profiles.json'],
+    ]) {
       const row = document.createElement('p');
       const copy = document.createElement('button');
       copy.textContent = `复制 ${label} 订阅地址`;

@@ -14,6 +14,9 @@ pub const ASSETS: &[&str] = &[
     "node.aliases",
     "node.ipv4",
     "node.ipv6",
+    "clients.xhttp_weight",
+    "clients.ws_weight",
+    "clients.reality_weight",
 ];
 pub fn changes(a: &Value, b: &Value, prefix: &str, result: &mut Vec<Value>) {
     if a == b {
@@ -185,7 +188,10 @@ mod tests {
         assert!(enforce(&c, &n, false).unwrap().is_empty());
         n.node.domain = "speed.test.org".into();
         assert!(enforce(&c, &n, false).is_ok());
+        n.clients.xhttp_weight -= 1;
         n.clients.ws_weight += 1;
+        assert!(enforce(&c, &n, false).is_ok());
+        n.clients.fingerprint_weights.insert("chrome".into(), 1);
         assert!(enforce(&c, &n, false).is_err());
         assert!(enforce(&c, &n, true).is_ok());
         n.warp.take_over_default_route = true;

@@ -140,6 +140,10 @@ pub fn outbound(c: &Config, s: &Secrets, kind: &str, fingerprint: &str) -> Resul
 /// JSON is a YAML 1.2 subset accepted by Mihomo; use one safe serializer,
 /// including for arbitrary operator-supplied paths, instead of interpolating YAML.
 pub fn mihomo(c: &Config, s: &Secrets) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(&json!({"proxies":mihomo_nodes(c, s)?})).map_err(Into::into)
+}
+
+fn mihomo_nodes(c: &Config, s: &Secrets) -> Result<Vec<Value>> {
     let profiles = profiles(c, s)?;
     let mut proxies = vec![];
     for p in profiles["profiles"].as_array().unwrap() {
@@ -171,7 +175,79 @@ pub fn mihomo(c: &Config, s: &Secrets) -> Result<Vec<u8>> {
         }
         proxies.push(node);
     }
-    serde_json::to_vec_pretty(&json!({"proxies":proxies})).map_err(Into::into)
+    Ok(proxies)
+}
+
+pub fn mihomo_weighted(c: &Config, s: &Secrets, browser_login: Option<&str>) -> Result<Vec<u8>> {
+    let proxies = mihomo_nodes(c, s)?;
+    let mut protocols = [Vec::new(), Vec::new(), Vec::new()];
+    let manual: Vec<&str> = proxies
+        .iter()
+        .filter_map(|proxy| proxy["name"].as_str())
+        .collect();
+    for &name in &manual {
+        match name {
+            "ws" => protocols[1].push(name),
+            "reality" => protocols[2].push(name),
+            _ => protocols[0].push(name),
+        }
+    }
+    let weights = [
+        c.clients.xhttp_weight,
+        c.clients.ws_weight,
+        c.clients.reality_weight,
+    ];
+    ensure!(
+        weights.iter().map(|&weight| u64::from(weight)).sum::<u64>() == 100,
+        "Client weights must sum to 100"
+    );
+    ensure!(
+        protocols.iter().all(|nodes| !nodes.is_empty()),
+        "Missing protocol nodes"
+    );
+
+    // Mihomo cycles through round-robin group entries, including repeated
+    // references. The actual proxy definitions appear only once.
+    let mut slots = Vec::new();
+    let mut credits = [0i32; 3];
+    let mut next = [0; 3];
+    for _ in 0..100 {
+        for (credit, weight) in credits.iter_mut().zip(weights) {
+            *credit += weight as i32;
+        }
+        let protocol = (0..3).max_by_key(|&index| credits[index]).unwrap();
+        credits[protocol] -= 100;
+        let nodes = &protocols[protocol];
+        slots.push(nodes[next[protocol] % nodes.len()]);
+        next[protocol] += 1;
+        if credits == [0; 3] {
+            break;
+        }
+    }
+
+    let health_url = if let Some(portal) = browser_login {
+        // The portal is reachable through a device before it signs in.
+        format!("{}/", portal.trim_end_matches('/'))
+    } else if c.ports.https == 443 {
+        format!("https://{}/", c.node.domain)
+    } else {
+        format!("https://{}:{}/", c.node.domain, c.ports.https)
+    };
+    const AUTO: &str = "nodectl 按比例分流";
+    const GROUP: &str = "nodectl";
+    let choices: Vec<&str> = std::iter::once(AUTO).chain(manual).collect();
+    Ok(serde_json::to_vec_pretty(&json!({
+        "mixed-port": 7890,
+        "allow-lan": false,
+        "mode": "rule",
+        "proxies": proxies,
+        "proxy-groups": [
+            {"name": GROUP, "type": "select", "proxies": choices},
+            {"name": AUTO, "type": "load-balance", "strategy": "round-robin", "proxies": slots,
+             "url": health_url, "expected-status": "200", "interval": 300, "hidden": true},
+        ],
+        "rules": [format!("MATCH,{GROUP}")],
+    }))?)
 }
 
 pub fn profiles(c: &Config, s: &Secrets) -> Result<Value> {

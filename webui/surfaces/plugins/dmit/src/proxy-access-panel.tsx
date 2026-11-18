@@ -8,6 +8,7 @@ import { PasswordField, TextField } from '@community-go/ui-adapter/form-field';
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import {
   useNodeManagement,
+  type ClientExportFormat,
   type ProxyAccess,
   type ProxyAccessChange,
 } from '../../../src/node-management';
@@ -15,7 +16,7 @@ import { Details, Timestamp, useNodeText } from './common';
 
 type User = ProxyAccess['users'][number];
 type NewUser = Extract<ProxyAccessChange, { action: 'create' }>['users'][number];
-type DeviceFormat = 'xray' | 'mihomo' | 'subscriptions';
+type DeviceFormat = ClientExportFormat | 'subscriptions';
 type Confirm = Readonly<{ label: string; description: string; change: ProxyAccessChange }>;
 
 export default function ProxyAccessPanel({
@@ -455,6 +456,13 @@ function UserEditor({
                       onPress={() => download(row.id, 'xray')}
                     >
                       {t('nodes.xray')}
+                    </Action>
+                    <Action
+                      variant="secondary"
+                      disabled={busy}
+                      onPress={() => download(row.id, 'mihomo-weighted')}
+                    >
+                      {t('nodes.mihomoWeighted')}
                     </Action>
                     {subscriptions ? (
                       <Action

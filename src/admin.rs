@@ -573,16 +573,10 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
                 app.audit("proxy-access-profile", "success", None)?;
                 json!({"content":content})
             }
-            "clients/xray" | "clients/mihomo" => {
+            "clients/xray" | "clients/mihomo" | "clients/mihomo-weighted" => {
                 let _guard = app.store.lock()?;
-                let (kind, bytes) = crate::share::current_clients(
-                    &app.store,
-                    if path.ends_with("xray") {
-                        "xray"
-                    } else {
-                        "mihomo"
-                    },
-                )?;
+                let (kind, bytes) =
+                    crate::share::current_clients(&app.store, &path["clients/".len()..])?;
                 app.audit("export-clients", "success", None)?;
                 json!({"content_type":kind,"content":String::from_utf8(bytes)?})
             }
