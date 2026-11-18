@@ -447,6 +447,12 @@ async fn real_xray_denies_unauthenticated_traffic_and_revokes_existing_connectio
             .success()
     );
     assert_reply(curl(Some(socks), portal_args.clone()).await?, "节点认证");
+    let mut health_check = portal_args.clone();
+    health_check.push("--head".into());
+    let reply = curl(Some(socks), health_check).await?;
+    assert!(reply.stdout.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(reply.stdout.ends_with(b"\r\n\r\n"));
+    assert!(!curl(Some(socks), target()).await?.status.success());
     // A no-referrer policy would serialize a browser navigation POST's Origin
     // as null. Keep the same-origin form compatible with the strict check.
     let mut page_headers = portal_args.clone();

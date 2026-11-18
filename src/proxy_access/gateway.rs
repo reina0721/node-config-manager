@@ -204,8 +204,15 @@ async fn portal(
     let mut tls = TlsAcceptor::from(Arc::new(tls)).accept(stream).await?;
     let request = request(&mut tls).await?;
     let reply = match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/") if request.body.is_empty() => {
-            response(200, "OK", "登录以使用当前设备的代理节点。")
+        ("GET" | "HEAD", "/") if request.body.is_empty() => {
+            let mut reply = response(200, "OK", "登录以使用当前设备的代理节点。");
+            if request.method == "HEAD" {
+                let end = reply
+                    .find("\r\n\r\n")
+                    .context("Missing HTTP response separator")?;
+                reply.truncate(end + 4);
+            }
+            reply
         }
         ("POST", "/")
             if request.origin.as_deref() == Some(&origin)
