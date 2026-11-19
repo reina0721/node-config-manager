@@ -574,3 +574,48 @@ async fn real_xray_denies_unauthenticated_traffic_and_revokes_existing_connectio
     assert!(!curl(Some(socks), portal_args).await?.status.success());
     Ok(())
 }
+
+#[test]
+fn scheduled_usage_reset_keeps_the_interval_across_restarts() -> Result<()> {
+    let (_tmp, store) = crate::tests::sandbox();
+    let access = Access(&store);
+    let guard = access.lock()?;
+    let now = admin_auth::now();
+    let mut account = Account::new("local-traffic-test", 1)?;
+    let previous = account.ledger_id();
+    account.traffic_cycle = Some(TrafficCycle {
+        next_reset: now - 125,
+        interval_seconds: 60,
+    });
+    let mut profile = device();
+    profile.authenticated = Some(now - 100);
+    let id = Uuid::new_v4();
+    access.write(&Database {
+        enabled: true,
+        users: BTreeMap::from([("alice".into(), account)]),
+        devices: BTreeMap::from([(id, profile)]),
+        ..Default::default()
+    })?;
+    assert!(access.reset_due(now).is_err());
+    drop(guard);
+
+    assert!(has_traffic_cycles(&store)?);
+    assert!(crate::upgrade::validate_web(&store, "v0.9.0").is_err());
+    let updated = access
+        .reset_due(now)?
+        .context("Missing test access state")?;
+    let rotated = updated.users["alice"].ledger_id();
+    assert_ne!(rotated, previous);
+    assert_eq!(updated.devices[&id].authenticated, None);
+    assert_eq!(
+        updated.users["alice"]
+            .traffic_cycle
+            .as_ref()
+            .unwrap()
+            .next_reset,
+        now + 55
+    );
+    let reopened = Access(&store).reset_due(now + 30)?.unwrap();
+    assert_eq!(reopened.users["alice"].ledger_id(), rotated);
+    Ok(())
+}

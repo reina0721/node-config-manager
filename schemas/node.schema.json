@@ -370,6 +370,14 @@
         "enabled": {
           "type": "boolean"
         },
+        "expires": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
         "fallback_parent": {
           "type": [
             "string",
@@ -544,7 +552,8 @@
         "shadowsocks-2022",
         "http",
         "mixed",
-        "hysteria2"
+        "hysteria2",
+        "wireguard"
       ]
     },
     "Protocol2": {
@@ -558,7 +567,8 @@
         "trojan",
         "shadowsocks",
         "shadowsocks-2022",
-        "hysteria2"
+        "hysteria2",
+        "round-robin"
       ]
     },
     "Reality": {
@@ -757,7 +767,8 @@
         "hysteria",
         "grpc",
         "httpupgrade",
-        "mkcp"
+        "mkcp",
+        "wireguard"
       ]
     },
     "Upstream": {
@@ -777,6 +788,13 @@
         "enabled": {
           "type": "boolean"
         },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
         "name": {
           "type": "string"
         },
@@ -790,6 +808,12 @@
         },
         "server_name": {
           "type": "string"
+        },
+        "via": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

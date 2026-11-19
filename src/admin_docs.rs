@@ -35,6 +35,8 @@ pub fn xray(store: &Store) -> Result<Value> {
                     "users",
                     "accounts",
                     "privateKey",
+                    "secretKey",
+                    "preSharedKey",
                     "shortIds",
                     "decryption",
                     "encryption",
@@ -178,7 +180,7 @@ pub fn openapi() -> Value {
             "/proxy-access",
             "Change account, device or browser authorization state",
             json!({"type":"object","required":["action"],"properties":{"action":{"enum":[
-            "settings","create","import","delete","edit","create-device","delete-device","policy","group-members","reset-traffic"]}}}),
+            "settings","create","import","delete","edit","create-device","delete-device","policy","group-members","reset-traffic","traffic-cycle"]}}}),
             false,
         ),
         (

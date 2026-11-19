@@ -34,8 +34,12 @@ export function UpstreamForm({
   data,
   update,
   writeCredential,
+  id,
+  config,
 }: {
   data: ManagedUpstream;
+  id: string | null;
+  config: NodeConfiguration;
   update: (value: ManagedUpstream) => void;
   writeCredential: (credential: UpstreamCredential | undefined, clear: boolean) => void;
 }) {
@@ -45,6 +49,11 @@ export function UpstreamForm({
   const [secret, setSecret] = useState('');
   const [clear, setClear] = useState(false);
   const protocol = data.protocol;
+  const pool = protocol === 'round-robin';
+  const choices = Object.entries(config.management?.upstreams ?? {})
+    .filter(([value, entry]) => value !== id && entry.protocol !== 'round-robin')
+    .map(([value, entry]) => ({ value, label: entry.name }));
+
   const needsUsername =
     protocol === 'socks5' || protocol === 'socks5-tls' || protocol === 'https-connect';
   const needsUuid = protocol === 'vless' || protocol === 'vmess';
@@ -84,69 +93,112 @@ export function UpstreamForm({
           { value: 'shadowsocks', label: 'Shadowsocks AES-256-GCM' },
           { value: 'shadowsocks-2022', label: 'Shadowsocks-2022 AES-128-GCM' },
           { value: 'hysteria2', label: 'Hysteria2' },
+          { value: 'round-robin', label: label('roundRobin') },
         ]}
         onValueChange={(value) => {
           setSecret('');
           setUsername('');
           setClear(false);
-          update({ ...data, protocol: value as ManagedUpstream['protocol'], server_name: '' });
+          const { via, members, ...common } = data;
+          update({
+            ...common,
+            protocol: value as ManagedUpstream['protocol'],
+            server_name: '',
+            ...(value === 'round-robin'
+              ? { address: '', port: 0, members: members ?? [] }
+              : { port: data.port || 1080, ...(via ? { via } : {}) }),
+          });
+          if (value === 'round-robin') writeCredential(undefined, true);
         }}
       />
-      <TextField
-        label={label('address')}
-        value={data.address}
-        error={!data.address.trim() ? t('console.requiredField') : ''}
-        onChange={(e) => update({ ...data, address: e.target.value })}
-      />
-      <TextField
-        label={t('catalogue.port')}
-        value={String(data.port)}
-        error={
-          !Number.isInteger(data.port) || data.port < 1 || data.port > 65535
-            ? t('console.portError')
-            : ''
-        }
-        onChange={(e) => update({ ...data, port: Number(e.target.value) })}
-      />
-      {needsSni && (
-        <TextField
-          label={t('catalogue.sni')}
-          value={data.server_name}
-          onChange={(e) => update({ ...data, server_name: e.target.value })}
-        />
-      )}
-      <SwitchField
-        label={label('clear')}
-        description=""
-        checked={clear}
-        onCheckedChange={(checked) => {
-          setClear(checked);
-          setSecret('');
-          setUsername('');
-          writeCredential(undefined, checked);
-        }}
-      />
-      {!clear && (
+      {pool ? (
+        <fieldset className="grid gap-2">
+          <legend className="font-semibold">{label('poolMembers')}</legend>
+          {choices.map((choice) => (
+            <SwitchField
+              key={choice.value}
+              label={choice.label}
+              description=""
+              checked={(data.members ?? []).includes(choice.value)}
+              onCheckedChange={(checked) =>
+                update({
+                  ...data,
+                  members: toggle(data.members ?? [], choice.value, checked),
+                })
+              }
+            />
+          ))}
+        </fieldset>
+      ) : (
         <>
-          {needsUsername && (
+          <SelectField
+            label={label('via')}
+            value={data.via ?? 'direct'}
+            options={[{ value: 'direct', label: label('direct') }, ...choices]}
+            onValueChange={(value) => {
+              const next = { ...data };
+              if (value === 'direct') delete next.via;
+              else next.via = value;
+              update(next);
+            }}
+          />
+          <TextField
+            label={label('address')}
+            value={data.address}
+            error={!data.address.trim() ? t('console.requiredField') : ''}
+            onChange={(e) => update({ ...data, address: e.target.value })}
+          />
+          <TextField
+            label={t('catalogue.port')}
+            value={String(data.port)}
+            error={
+              !Number.isInteger(data.port) || data.port < 1 || data.port > 65535
+                ? t('console.portError')
+                : ''
+            }
+            onChange={(e) => update({ ...data, port: Number(e.target.value) })}
+          />
+          {needsSni && (
             <TextField
-              label={t('access.username')}
-              value={username}
-              onChange={(e) => {
-                setUsername(e.target.value);
-                setPassword(secret, e.target.value);
-              }}
+              label={t('catalogue.sni')}
+              value={data.server_name}
+              onChange={(e) => update({ ...data, server_name: e.target.value })}
             />
           )}
-          <PasswordField
-            purpose="current"
-            showLabel={t('common.show')}
-            hideLabel={t('common.hide')}
-            label={needsUuid ? label('uuid') : t('access.password')}
-            hint={label('credentialHint')}
-            value={secret}
-            onChange={(e) => setPassword(e.target.value, username)}
+          <SwitchField
+            label={label('clear')}
+            description=""
+            checked={clear}
+            onCheckedChange={(checked) => {
+              setClear(checked);
+              setSecret('');
+              setUsername('');
+              writeCredential(undefined, checked);
+            }}
           />
+          {!clear && (
+            <>
+              {needsUsername && (
+                <TextField
+                  label={t('access.username')}
+                  value={username}
+                  onChange={(e) => {
+                    setUsername(e.target.value);
+                    setPassword(secret, e.target.value);
+                  }}
+                />
+              )}
+              <PasswordField
+                purpose="current"
+                showLabel={t('common.show')}
+                hideLabel={t('common.hide')}
+                label={needsUuid ? label('uuid') : t('access.password')}
+                hint={label('credentialHint')}
+                value={secret}
+                onChange={(e) => setPassword(e.target.value, username)}
+              />
+            </>
+          )}
         </>
       )}
       <SwitchField

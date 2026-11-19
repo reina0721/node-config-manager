@@ -24,6 +24,7 @@ pub enum Protocol {
     #[serde(rename = "shadowsocks-2022")]
     Shadowsocks2022,
     Hysteria2,
+    RoundRobin,
 }
 
 impl Protocol {
@@ -44,6 +45,12 @@ pub struct Upstream {
     pub address: String,
     pub port: u16,
     pub server_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub via: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[schemars(with = "BTreeSet<String>")]
+    pub members: BTreeSet<Uuid>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -111,6 +118,26 @@ pub fn validate(config: &Config, secrets: &Secrets) -> Result<()> {
             !id.is_nil() && valid_name(&upstream.name),
             "Invalid upstream name"
         );
+        if upstream.protocol == Protocol::RoundRobin {
+            ensure!(
+                upstream.via.is_none()
+                    && upstream.address.is_empty()
+                    && upstream.port == 0
+                    && upstream.server_name.is_empty()
+                    && !secrets.upstreams.contains_key(id)
+                    && (!upstream.enabled || upstream.members.len() >= 2)
+                    && upstream.members.iter().all(|member| {
+                        management.upstreams.get(member).is_some_and(|candidate| {
+                            candidate.protocol != Protocol::RoundRobin
+                                && (!upstream.enabled || candidate.enabled)
+                        })
+                    }),
+                "invalid_upstream_pool"
+            );
+            continue;
+        }
+        ensure!(upstream.members.is_empty(), "invalid_upstream_pool");
+        chain(config, *id)?;
         ensure!(
             upstream.port > 0
                 && (config::domain(&upstream.address)
@@ -308,6 +335,63 @@ pub fn preview(c: &Config, destination: Destination) -> Result<Value> {
     })
 }
 
+fn chain(config: &Config, id: Uuid) -> Result<Vec<(Uuid, &Upstream)>> {
+    let management = config
+        .management
+        .as_ref()
+        .context("invalid_upstream_chain")?;
+    let mut found = BTreeSet::new();
+    let mut result = vec![];
+    let mut next = Some(id);
+    while let Some(id) = next {
+        ensure!(found.insert(id), "invalid_upstream_chain");
+        let node = management
+            .upstreams
+            .get(&id)
+            .context("invalid_upstream_chain")?;
+        ensure!(
+            node.protocol != Protocol::RoundRobin,
+            "invalid_upstream_chain"
+        );
+        ensure!(
+            result
+                .first()
+                .is_none_or(|entry: &(Uuid, &Upstream)| !entry.1.enabled || node.enabled),
+            "invalid_upstream_chain"
+        );
+        result.push((id, node));
+        next = node.via;
+    }
+    Ok(result)
+}
+
+pub fn probe_paths(config: &Config, secrets: &Secrets, id: Uuid) -> Result<Vec<Vec<Value>>> {
+    let node = config
+        .management
+        .as_ref()
+        .and_then(|m| m.upstreams.get(&id))
+        .filter(|upstream| upstream.enabled)
+        .context("not_found")?;
+    let roots = if node.protocol == Protocol::RoundRobin {
+        node.members.iter().copied().collect()
+    } else {
+        vec![id]
+    };
+    roots
+        .into_iter()
+        .map(|root| {
+            chain(config, root)?
+                .into_iter()
+                .map(|(id, node)| upstream(id, node, secrets.upstreams.get(&id)))
+                .collect()
+        })
+        .collect()
+}
+
+fn balancer_tag(id: Uuid) -> String {
+    format!("pool-{}", id.simple())
+}
+
 fn tag(id: Uuid) -> String {
     format!("upstream-{}", id.simple())
 }
@@ -318,17 +402,28 @@ fn effective(c: &Config, target: &str) -> String {
         "cn-warp" if c.routes_cn() => target.into(),
         _ => Uuid::parse_str(target)
             .ok()
-            .filter(|id| {
-                c.management
-                    .as_ref()
-                    .and_then(|m| m.upstreams.get(id))
-                    .is_some_and(|upstream| upstream.enabled)
+            .and_then(|id| {
+                let node = c
+                    .management
+                    .as_ref()?
+                    .upstreams
+                    .get(&id)
+                    .filter(|node| node.enabled)?;
+                Some(if node.protocol == Protocol::RoundRobin {
+                    balancer_tag(id)
+                } else {
+                    tag(id)
+                })
             })
-            .map_or_else(|| "block".into(), tag),
+            .unwrap_or_else(|| "block".into()),
     }
 }
 
 pub fn upstream(id: Uuid, node: &Upstream, credential: Option<&Credential>) -> Result<Value> {
+    ensure!(
+        node.protocol != Protocol::RoundRobin,
+        "invalid_upstream_pool"
+    );
     let mut server = json!({"address":node.address,"port":node.port});
     let mut result = json!({"tag":tag(id)});
     if node.protocol.tls() {
@@ -399,18 +494,33 @@ pub fn upstream(id: Uuid, node: &Upstream, credential: Option<&Credential>) -> R
             result["settings"] = server;
         }
     }
+    if let Some(via) = node.via {
+        result["streamSettings"]["sockopt"]["dialerProxy"] = json!(tag(via));
+    }
     Ok(result)
 }
 
 pub fn append_outbounds(c: &Config, s: &Secrets, rendered: &mut Value) -> Result<()> {
     if let Some(management) = &c.management {
+        let mut balancers = Vec::new();
         let outbounds = rendered["outbounds"]
             .as_array_mut()
             .context("Missing outbounds")?;
-        for (&id, node) in &management.upstreams {
-            if node.enabled {
+        for (&id, node) in management.upstreams.iter().filter(|(_, node)| node.enabled) {
+            if node.protocol == Protocol::RoundRobin {
+                balancers.push(json!({
+                    "tag":balancer_tag(id), "selector":node.members.iter().copied().map(tag).collect::<Vec<_>>(),
+                    "strategy":{"type":"roundRobin"}, "fallbackTag":"block"
+                }));
+            } else {
                 outbounds.push(upstream(id, node, s.upstreams.get(&id))?);
             }
+        }
+        if !balancers.is_empty() {
+            rendered["routing"]["balancers"] = json!(balancers);
+            // The round-robin strategy requires the feature even when member
+            // health is checked by nodectl's explicit probes.
+            rendered["observatory"] = json!({"subjectSelector":[]});
         }
     }
     Ok(())
@@ -418,23 +528,52 @@ pub fn append_outbounds(c: &Config, s: &Secrets, rendered: &mut Value) -> Result
 
 pub fn routing(c: &Config, ingress_tags: &[(String, String)]) -> Vec<Value> {
     c.management.as_ref().map_or_else(Vec::new, |m| {
-        sorted(m).into_iter().filter_map(|(_, rule)| {
-            let tags: Vec<_> = ingress_tags.iter()
-                .filter(|(id, _)| rule.inbounds.is_empty() || rule.inbounds.contains(id))
-                .map(|(_, tag)| tag).collect();
-            if tags.is_empty() { return None; }
-            let mut filter = json!({"type":"field","inboundTag":tags,"outboundTag":effective(c, &rule.outbound)});
-            if !rule.domains.is_empty() { filter["domain"] = json!(rule.domains.iter().map(|d| format!("domain:{d}")).collect::<Vec<_>>()); }
-            if !rule.ips.is_empty() { filter["ip"] = json!(rule.ips); }
-            if let Some((min, max)) = rule.port_min.zip(rule.port_max) { filter["port"] = json!(format!("{min}-{max}")); }
-            if let Some(network) = rule.network { filter["network"] = json!(network); }
-            Some(filter)
-        }).collect()
+        sorted(m)
+            .into_iter()
+            .filter_map(|(_, rule)| {
+                let tags: Vec<_> = ingress_tags
+                    .iter()
+                    .filter(|(id, _)| rule.inbounds.is_empty() || rule.inbounds.contains(id))
+                    .map(|(_, tag)| tag)
+                    .collect();
+                if tags.is_empty() {
+                    return None;
+                }
+                let target = effective(c, &rule.outbound);
+                let mut filter = json!({"type":"field","inboundTag":tags});
+                let key = if target.starts_with("pool-") {
+                    "balancerTag"
+                } else {
+                    "outboundTag"
+                };
+                filter[key] = json!(target);
+                if !rule.domains.is_empty() {
+                    filter["domain"] = json!(
+                        rule.domains
+                            .iter()
+                            .map(|d| format!("domain:{d}"))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                if !rule.ips.is_empty() {
+                    filter["ip"] = json!(rule.ips);
+                }
+                if let Some((min, max)) = rule.port_min.zip(rule.port_max) {
+                    filter["port"] = json!(format!("{min}-{max}"));
+                }
+                if let Some(network) = rule.network {
+                    filter["network"] = json!(network);
+                }
+                Some(filter)
+            })
+            .collect()
     })
 }
 
 pub fn needs_ingress(c: &Config) -> bool {
-    c.management
-        .as_ref()
-        .is_some_and(|m| m.rules.values().any(|rule| rule.enabled))
+    c.management.as_ref().is_some_and(|m| {
+        m.rules.values().any(|rule| rule.enabled)
+            || m.active_inbounds()
+                .any(|(_, inbound)| inbound.expires.is_some())
+    })
 }

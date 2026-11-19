@@ -388,8 +388,10 @@ pub fn device_profiles(
     identity.xhttp_uuid = id.to_string();
     identity.ws_uuid = id.to_string();
     identity.reality_uuid = id.to_string();
-    let native = format.strip_prefix("native-hysteria/");
-    if let Some(id) = native {
+    let native = format
+        .split_once('/')
+        .filter(|(kind, _)| ["native-hysteria", "native-wireguard"].contains(kind));
+    if let Some((_, id)) = native {
         ensure!(
             id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
             "bad_request"
@@ -407,9 +409,12 @@ pub fn device_profiles(
                     .map(|entry| json!({"name":entry.name,"outbound":entry.outbound})),
             );
             match format {
-                _ if native.is_some() || format == "native-list" => Ok(serde_json::to_vec_pretty(
-                    &client_export::native_profiles(&profiles, native)?,
-                )?),
+                _ if let Some((kind, id)) = native => {
+                    client_export::native_profile(&profiles, kind, id)
+                }
+                "native-list" => Ok(serde_json::to_vec_pretty(&client_export::native_list(
+                    &profiles,
+                )?)?),
                 "xray-config" => Ok(serde_json::to_vec_pretty(&client_export::xray_config(
                     &profiles,
                 )?)?),

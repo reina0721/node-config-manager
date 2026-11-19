@@ -170,7 +170,9 @@ export function createAdminApi(
       } else if (format === 'xray' || format === 'mihomo' || format === 'mihomo-weighted') {
         downloadClients(format, content);
       } else {
-        download('nodectl-hysteria2.json', 'application/json', content);
+        if (format.startsWith('native-wireguard/'))
+          download('nodectl-wireguard.conf', 'text/plain', content);
+        else download('nodectl-hysteria2.json', 'application/json', content);
       }
     },
     overview: () => request('overview', overviewSchema),

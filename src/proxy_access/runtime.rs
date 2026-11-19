@@ -335,14 +335,21 @@ pub(super) fn ingress_id(device: uuid::Uuid, tag: &str) -> uuid::Uuid {
     uuid::Builder::from_random_bytes(id).into_uuid()
 }
 
-pub(super) fn ingress(config: &Config) -> Vec<String> {
+pub(super) fn ingress(config: &Config) -> Vec<(String, Option<u64>)> {
     if !crate::egress::needs_ingress(config) {
         return Vec::new();
     }
     PUBLIC_TAGS
         .into_iter()
-        .map(str::to_owned)
-        .chain(managed_tags(config).into_keys())
+        .map(|tag| (tag.to_owned(), None))
+        .chain(managed_tags(config).into_iter().map(|(tag, id)| {
+            let expiry = config
+                .management
+                .as_ref()
+                .and_then(|m| m.inbounds.get(&id))
+                .and_then(|inbound| inbound.expires);
+            (tag, expiry)
+        }))
         .collect()
 }
 

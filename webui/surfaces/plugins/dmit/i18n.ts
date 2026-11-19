@@ -122,6 +122,7 @@ const zh = {
     tlsOnly: '使用外层 TLS',
     samePortFallback: '同端口回落',
     fallbackParent: '父入站',
+    inboundExpiry: '入站到期时间（UTC）',
     fallbackParentError: '选择可用的 VLESS Raw TCP + TLS 父入站。',
     fallbackPortHint: '继承父入站的监听端口。',
 
@@ -153,6 +154,9 @@ const zh = {
     description: '按序匹配认证后的流量。浏览器认证入口、CN DNS 和防泄漏规则先执行。',
   },
   egress: {
+    roundRobin: '轮询组',
+    poolMembers: '出站成员',
+    via: '经由其他出站拨号',
     name: '名称',
     address: '上游地址',
     uuid: 'VLESS UUID',
@@ -459,7 +463,14 @@ const zh = {
     'export-links': '下载分享链接',
     'export-qr': '下载设备二维码',
     nativeProfiles: '原生客户端配置',
+    cyclePeriod: '流量重置周期（秒）',
+    cycleHint: '输入 60 秒至 366 天之间的整数秒数，留空可取消周期重置。',
+    cycleNext: '下次重置',
+    saveCycle: '保存重置周期',
+    cycleRisk: '周期到达时清零当前用量，已有连接断开，设备需要重新登录。',
+
     downloadHysteria: '下载 Hysteria2 JSON',
+    downloadWireguard: '下载 WireGuard 配置',
     noNativeProfiles: '此设备暂无可下载的原生配置。',
 
     deviceLimit: '同时认证的设备上限（1–32）',

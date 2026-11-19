@@ -19,6 +19,7 @@ const WEB_MINIMUM: [u64; 3] = [0, 6, 5];
 const ACCESS_MINIMUM: [u64; 3] = [0, 7, 1];
 const MANAGEMENT_MINIMUM: [u64; 3] = [0, 8, 0];
 const TRANSPORT_MINIMUM: [u64; 3] = [0, 8, 2];
+const TRAFFIC_CYCLE_MINIMUM: [u64; 3] = [0, 10, 0];
 
 #[derive(Serialize, Deserialize)]
 struct Switch {
@@ -103,12 +104,13 @@ fn validate_compatibility(store: &Store, version: [u64; 3]) -> Result<()> {
 }
 
 fn snapshot_minimum(store: &Store) -> Result<[u64; 3]> {
-    let mut minimum =
-        if proxy_access::has_account_policies(store)? || crate::fleet::has_records(store)? {
-            MANAGEMENT_MINIMUM
-        } else {
-            WEB_MINIMUM
-        };
+    let mut minimum = if proxy_access::has_traffic_cycles(store)? {
+        TRAFFIC_CYCLE_MINIMUM
+    } else if proxy_access::has_account_policies(store)? || crate::fleet::has_records(store)? {
+        MANAGEMENT_MINIMUM
+    } else {
+        WEB_MINIMUM
+    };
     for pointer in ["current", "previous"] {
         if let Some(id) = store.pointer(pointer)? {
             let (config, _, manifest) = store.verify_with_manifest(&id)?;

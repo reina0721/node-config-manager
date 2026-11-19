@@ -281,6 +281,7 @@ export default function ProxyAccessPanel({
                     change: { action: 'reset-traffic', username: user.username },
                   })
                 }
+                trafficCycles={data.traffic_cycles === true}
               />
             )}
           </EditorDrawer>
@@ -614,7 +615,11 @@ function UserEditor({
                                 disabled={busy}
                                 onPress={() => download(row.id, profile.format)}
                               >
-                                {t('access.downloadHysteria')}
+                                {t(
+                                  profile.format.startsWith('native-wireguard/')
+                                    ? 'access.downloadWireguard'
+                                    : 'access.downloadHysteria',
+                                )}
                               </Action>
                             </div>
                           </div>
@@ -643,6 +648,7 @@ function AccountPolicy({
   onDirty,
   change,
   reset,
+  trafficCycles,
 }: {
   user: User;
   busy: boolean;
@@ -650,6 +656,7 @@ function AccountPolicy({
   onDirty: (dirty: boolean) => void;
   change: (input: ProxyAccessChange) => Promise<boolean>;
   reset: () => void;
+  trafficCycles: boolean;
 }) {
   const t = useNodeText();
   const [disabled, setDisabled] = useState(user.disabled);
@@ -657,11 +664,18 @@ function AccountPolicy({
     user.expires === null ? '' : new Date(user.expires * 1000).toISOString(),
   );
   const [quota, setQuota] = useState(user.quota_bytes === null ? '' : String(user.quota_bytes));
+  const [cycle, setCycle] = useState(user.traffic_cycle?.interval_seconds?.toString() ?? '');
+  const cycleSeconds = cycle.trim() ? Number(cycle) : null;
+  const cycleValid =
+    cycleSeconds === null ||
+    (Number.isSafeInteger(cycleSeconds) && cycleSeconds >= 60 && cycleSeconds <= 366 * 86400);
   const expirySeconds = expiry.trim() ? Math.floor(Date.parse(expiry) / 1000) : null;
   const quotaBytes = quota.trim() ? Number(quota) : null;
   const expiryValid =
     expirySeconds === null ||
     (/Z$/i.test(expiry) && Number.isSafeInteger(expirySeconds) && expirySeconds > 0);
+  const cycleDirty =
+    trafficCycles && cycleSeconds !== (user.traffic_cycle?.interval_seconds ?? null);
   const quotaValid = quotaBytes === null || (Number.isSafeInteger(quotaBytes) && quotaBytes > 0);
   const valid = expiryValid && quotaValid;
   const differs =
@@ -705,6 +719,54 @@ function AccountPolicy({
           onDirty(true);
         }}
       />
+      {trafficCycles && (
+        <>
+          <TextField
+            label={t('access.cyclePeriod')}
+            hint={t('access.cycleHint')}
+            value={cycle}
+            error={cycleValid ? '' : t('access.cycleHint')}
+            onChange={(e) => {
+              setCycle(e.target.value);
+              onDirty(true);
+            }}
+          />
+          {user.traffic_cycle && (
+            <Details
+              label={t('access.cyclePeriod')}
+              items={[
+                [
+                  t('access.cycleNext'),
+                  <Timestamp key="cycle" value={user.traffic_cycle.next_reset} />,
+                ],
+              ]}
+            />
+          )}
+          <div>
+            <ConfirmDialog
+              triggerLabel={t('access.saveCycle')}
+              title={t('access.saveCycle')}
+              description={t('access.cycleRisk')}
+              impact={null}
+              cancelLabel={t('common.cancel')}
+              confirmLabel={t('access.save')}
+              failureMessage={t('common.failed')}
+              confirmDisabled={busy || !enabled || !cycleValid || !cycleDirty}
+              onConfirm={async () => {
+                if (
+                  !(await change({
+                    action: 'traffic-cycle',
+                    username: user.username,
+                    interval_seconds: cycleSeconds,
+                  }))
+                )
+                  throw new Error(t('common.failed'));
+                onDirty(differs);
+              }}
+            />
+          </div>
+        </>
+      )}
       <div className="flex flex-wrap gap-3">
         <ConfirmDialog
           triggerLabel={t('access.applyPolicy')}
@@ -726,7 +788,7 @@ function AccountPolicy({
               }))
             )
               throw new Error(t('common.failed'));
-            onDirty(false);
+            onDirty(cycleDirty);
           }}
         />
         <Action variant="secondary" disabled={busy} onPress={reset}>

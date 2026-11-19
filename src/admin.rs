@@ -362,6 +362,7 @@ async fn handle(
                 | "invalid_xhttp_mode"
                 | "invalid_vless_flow"
                 | "invalid_vless_encryption"
+                | "invalid_inbound_expiry"
                 | "invalid_fallback_parent"
                 | "inbound_path_conflict"
                 | "invalid_inbound_port"
@@ -374,6 +375,9 @@ async fn handle(
                 | "invalid_proxy_batch"
                 | "invalid_proxy_device"
                 | "invalid_proxy_quota"
+                | "invalid_traffic_cycle"
+                | "invalid_upstream_chain"
+                | "invalid_upstream_pool"
                 | "invalid_proxy_expiry"
                 | "managed_inbounds_require_proxy_access"
                 | "policies_require_proxy_access"
@@ -413,6 +417,7 @@ async fn handle(
                 "invalid_xhttp_mode" => Some("xhttp_mode"),
                 "invalid_vless_flow" => Some("flow"),
                 "invalid_vless_encryption" => Some("vless_encryption"),
+                "invalid_inbound_expiry" => Some("expires"),
                 "invalid_fallback_parent" => Some("fallback_parent"),
                 "invalid_proxy_username" | "proxy_user_exists" => Some("username"),
                 "invalid_proxy_password" => Some("password"),
@@ -450,6 +455,7 @@ fn remedy(code: &str) -> &str {
         "invalid_xhttp_mode" => "XHTTP 模式只能用于 VLESS + XHTTP 入站。",
         "invalid_vless_flow" => "此流控设置支持 VLESS Raw TCP + TLS 或 REALITY。",
         "invalid_vless_encryption" => "仅可在 VLESS Raw TCP + TLS 上配置独立的 VLESS 加密选项。",
+        "invalid_inbound_expiry" => "请填写有效的 UTC 到期时间，或留空以长期开放。",
         "invalid_fallback_parent" => {
             "请选择未分配回落的 VLESS Raw TCP + TLS 父入站，父入站需关闭 VLESS 协议内加密。"
         }
@@ -464,6 +470,9 @@ fn remedy(code: &str) -> &str {
         "invalid_proxy_batch" => "批量新建或导入支持每次 1–50 个账号。",
         "invalid_proxy_device" => "请检查设备名称或已登记设备数。",
         "invalid_proxy_quota" => "流量配额须大于零，留空表示不限额。",
+        "invalid_traffic_cycle" => "周期长度应为 60 秒至 366 天。",
+        "invalid_upstream_chain" => "请核对出站链路。引用的出站必须可用，链路不能形成循环。",
+        "invalid_upstream_pool" => "启用的轮询组至少需要两个可用的出站成员。",
         "invalid_proxy_expiry" => "请检查账号到期时间。",
         "managed_inbounds_require_proxy_access" => "启用附加入站或主机前，请启用浏览器认证。",
         "policies_require_proxy_access" => "客户端限制需要启用浏览器认证。",

@@ -35,7 +35,12 @@ struct Grant {
 }
 
 impl Admission {
-    fn from_database(store: &Store, db: &Database, now: u64, ingress: &[String]) -> Self {
+    fn from_database(
+        store: &Store,
+        db: &Database,
+        now: u64,
+        ingress: &[(String, Option<u64>)],
+    ) -> Self {
         let mut result = Self::default();
         let mut capacity = HashMap::new();
         if db.enabled {
@@ -43,6 +48,13 @@ impl Admission {
                 if let Some(account) = db.users.get(&device.username) {
                     result.portals.insert(device.portal, *profile);
                     if let Some(expiry) = db.expiry(device, now) {
+                        let expiry = account
+                            .traffic_cycle
+                            .as_ref()
+                            .map_or(expiry, |cycle| expiry.min(cycle.next_reset));
+                        if expiry <= now {
+                            continue;
+                        }
                         let budget = Budget {
                             ledger: account.ledger_id(),
                             quota: account.quota_bytes,
@@ -62,12 +74,16 @@ impl Admission {
                                     },
                                 );
                             } else {
-                                for tag in ingress {
+                                for (tag, end) in ingress {
+                                    let expires = expiry.min(end.unwrap_or(u64::MAX));
+                                    if expires <= now {
+                                        continue;
+                                    }
                                     result.transit.insert(
                                         runtime::ingress_id(device.transit, tag),
                                         Grant {
                                             device: *profile,
-                                            expires: expiry,
+                                            expires,
                                             budget,
                                             ingress: Some(tag.clone()),
                                         },
@@ -130,6 +146,23 @@ pub(super) async fn serve_on(
                 database = access.read().ok().flatten();
                 // Retry an unreadable record while denying new and existing flows.
                 loaded = database.as_ref().and(revision);
+            }
+            let now = admin_auth::now();
+            if database.as_ref().is_some_and(|db| {
+                db.users.values().any(|account| {
+                    account
+                        .traffic_cycle
+                        .as_ref()
+                        .is_some_and(|cycle| cycle.next_reset <= now)
+                })
+            }) {
+                let store = refresh.clone();
+                if let Ok(Ok(updated)) =
+                    tokio::task::spawn_blocking(move || Access(&store).reset_due(now)).await
+                {
+                    database = updated;
+                    loaded = None;
+                }
             }
             let revision = state_revision(std::path::Path::new(runtime::XRAY_CONFIG));
             if revision != installed_revision || ingress.is_none() {

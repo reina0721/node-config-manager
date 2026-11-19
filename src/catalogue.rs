@@ -11,6 +11,7 @@ use std::{
 };
 use uuid::Uuid;
 
+mod wireguard;
 mod xray_protocol;
 pub(crate) use xray_protocol::replace_accounts;
 
@@ -47,6 +48,7 @@ pub enum Protocol {
     Http,
     Mixed,
     Hysteria2,
+    Wireguard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -59,6 +61,7 @@ pub enum Transport {
     Grpc,
     Httpupgrade,
     Mkcp,
+    Wireguard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -153,6 +156,11 @@ const SS_STACKS: &[Stack] = &[Stack {
     security: Security::None,
     ..RAW_TLS
 }];
+const WIREGUARD_STACKS: &[Stack] = &[Stack {
+    transport: Transport::Wireguard,
+    security: Security::None,
+    ..RAW_TLS
+}];
 const HYSTERIA_STACKS: &[Stack] = &[Stack {
     transport: Transport::Hysteria,
     ..RAW_TLS
@@ -167,7 +175,7 @@ pub fn inbound_capabilities() -> Value {
                 "security":stack.security,
                 "listener":stack.listener,
                 "runtime":"xray",
-                "formats":if stack.transport == Transport::Mkcp { vec!["xray"] } else { vec!["xray","mihomo"] }
+                "formats":if matches!(stack.transport, Transport::Mkcp | Transport::Wireguard) { vec!["xray"] } else { vec!["xray","mihomo"] }
             }))
         }).collect::<Vec<_>>()
     })
@@ -182,7 +190,10 @@ impl Stack {
     }
 
     fn uses_udp_socket(self) -> bool {
-        matches!(self.transport, Transport::Hysteria | Transport::Mkcp)
+        matches!(
+            self.transport,
+            Transport::Hysteria | Transport::Mkcp | Transport::Wireguard
+        )
     }
 
     fn owns_tls(self) -> bool {
@@ -199,7 +210,7 @@ impl Stack {
 }
 
 impl Protocol {
-    const MANAGED: [Self; 8] = [
+    const MANAGED: [Self; 9] = [
         Self::Vless,
         Self::Vmess,
         Self::Trojan,
@@ -208,6 +219,7 @@ impl Protocol {
         Self::Http,
         Self::Mixed,
         Self::Hysteria2,
+        Self::Wireguard,
     ];
 
     fn stacks(self) -> &'static [Stack] {
@@ -218,6 +230,7 @@ impl Protocol {
             Self::Http | Self::Mixed => &[RAW_TLS],
             Self::Shadowsocks | Self::Shadowsocks2022 => SS_STACKS,
             Self::Hysteria2 => HYSTERIA_STACKS,
+            Self::Wireguard => WIREGUARD_STACKS,
             _ => &[],
         }
     }
@@ -255,6 +268,8 @@ pub struct Inbound {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub fallback_parent: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<u64>,
 }
 
 impl Inbound {
@@ -278,7 +293,10 @@ impl Inbound {
     }
 
     fn supports(&self, format: Format) -> bool {
-        self.stack().transport != Transport::Mkcp || format == Format::Xray
+        !matches!(
+            self.stack().transport,
+            Transport::Mkcp | Transport::Wireguard
+        ) || format == Format::Xray
     }
 
     pub fn dedicated(&self) -> bool {
@@ -634,6 +652,12 @@ pub fn validate(c: &Config) -> Result<()> {
         );
         let stack = inbound.checked_stack().context("invalid_inbound_stack")?;
         ensure!(
+            inbound
+                .expires
+                .is_none_or(|time| (1..=253_402_300_799).contains(&time)),
+            "invalid_inbound_expiry"
+        );
+        ensure!(
             inbound.xhttp_mode.is_none()
                 || (inbound.protocol == Protocol::Vless && stack.transport == Transport::Xhttp),
             "invalid_xhttp_mode"
@@ -966,7 +990,8 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
                 | Transport::Hysteria
                 | Transport::Grpc
                 | Transport::Httpupgrade
-                | Transport::Mkcp => {
+                | Transport::Mkcp
+                | Transport::Wireguard => {
                     stream["network"] = json!(stack.transport);
                     stream.as_object_mut().unwrap().remove("xhttpSettings");
                     if stack.security != Security::Reality {
@@ -1063,6 +1088,9 @@ fn direct_transport(stream: &mut Value, transport: Transport, path: &str) {
         Transport::Mkcp => {
             stream["kcpSettings"] = json!({});
         }
+        Transport::Wireguard => {
+            stream["network"] = json!("raw");
+        }
         _ => {}
     }
 }
@@ -1129,7 +1157,8 @@ pub fn client_outbound(
         | Transport::Hysteria
         | Transport::Grpc
         | Transport::Httpupgrade
-        | Transport::Mkcp => {
+        | Transport::Mkcp
+        | Transport::Wireguard => {
             stream["network"] = json!(stack.transport);
             stream.as_object_mut().unwrap().remove("xhttpSettings");
             if stack.security != Security::Reality {
@@ -1228,8 +1257,12 @@ pub fn client_entries<'a>(
     };
     let mut entries = Vec::new();
     let alias = device_alias(user);
+    let now = crate::admin_auth::now();
     for (id, inbound) in catalogue.active_inbounds() {
-        if inbound.supports(format) && catalogue.granted(groups, id) {
+        if inbound.supports(format)
+            && inbound.expires.is_none_or(|expires| expires > now)
+            && catalogue.granted(groups, id)
+        {
             let name = format!("{} · {id}", inbound.remark);
             let mut outbound =
                 client_outbound(c, s, Target::Managed(id, inbound), None, None, user, &alias)?;
@@ -1253,7 +1286,10 @@ pub fn client_entries<'a>(
         let target = catalogue
             .target(&host.inbound)
             .context("Unknown host inbound")?;
-        if matches!(target, Target::Managed(id, inbound) if !inbound.supports(format) || !catalogue.granted(groups, id))
+        if matches!(target, Target::Managed(id, inbound)
+            if !inbound.supports(format)
+            || !inbound.expires.is_none_or(|expires| expires > now)
+            || !catalogue.granted(groups, id))
         {
             continue;
         }

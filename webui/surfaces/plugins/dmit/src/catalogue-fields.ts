@@ -21,6 +21,7 @@ export const managedProtocolNames: Record<InboundCombination['protocol'], string
   http: 'HTTP CONNECT',
   mixed: 'Mixed (HTTP / SOCKS5)',
   hysteria2: 'Hysteria2',
+  wireguard: 'WireGuard',
 };
 export const transportNames: Record<InboundStack['transport'], string> = {
   raw: 'Raw TCP',
@@ -30,6 +31,7 @@ export const transportNames: Record<InboundStack['transport'], string> = {
   grpc: 'gRPC',
   httpupgrade: 'HTTPUpgrade',
   mkcp: 'mKCP',
+  wireguard: 'WireGuard UDP',
 };
 
 export function hasHttpPath(transport: InboundStack['transport']) {
@@ -92,13 +94,23 @@ export function inboundErrors(
   id: string | null,
 ) {
   const stack = inboundStack(inbound);
-  const errors: Partial<Record<'remark' | 'path' | 'port' | 'fallback_parent', string>> = {};
+  const errors: Partial<
+    Record<'remark' | 'path' | 'port' | 'fallback_parent' | 'expires', string>
+  > = {};
   if (
     !inbound.remark.trim() ||
     new TextEncoder().encode(inbound.remark).length > 120 ||
     /\p{Cc}/u.test(inbound.remark)
   )
     errors.remark = 'catalogue.remarkError';
+  if (
+    inbound.expires !== undefined &&
+    (!Number.isSafeInteger(inbound.expires) ||
+      inbound.expires < 1 ||
+      inbound.expires > 253_402_300_799)
+  ) {
+    errors.expires = 'console.expiryError';
+  }
   const others = Object.entries(config.management?.inbounds ?? {}).filter(
     ([other]) => other !== id,
   );

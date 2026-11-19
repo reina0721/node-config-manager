@@ -138,7 +138,8 @@ function managedRows(config: NodeConfiguration, kind: Kind): Row[] {
           (value.fallback_parent
             ? (m?.inbounds?.[value.fallback_parent]?.port ?? '—')
             : value.port || config.ports.https),
-        enabled: value.enabled,
+        enabled:
+          value.enabled && (value.expires === undefined || value.expires > Date.now() / 1000),
         edit: { id, kind, value },
       }));
     case 'host':
@@ -161,7 +162,13 @@ function managedRows(config: NodeConfiguration, kind: Kind): Row[] {
       return Object.entries(m?.upstreams ?? {}).map(([id, value]) => ({
         id,
         name: value.name,
-        detail: value.protocol + ' · ' + value.address + ':' + value.port,
+        detail:
+          value.protocol === 'round-robin'
+            ? (value.members ?? [])
+                .map((id) => m?.upstreams?.[id]?.name)
+                .filter(Boolean)
+                .join(', ')
+            : value.protocol + ' · ' + value.address + ':' + value.port,
         enabled: value.enabled,
         edit: { id, kind, value },
       }));
@@ -473,21 +480,29 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
                 {edit.kind === 'upstream' && (
                   <UpstreamForm
                     data={edit.value}
+                    id={edit.id}
+                    config={config}
                     update={(value) =>
-                      setEdit(
-                        value.protocol === edit.value?.protocol
-                          ? { ...edit, value }
-                          : { id: edit.id, kind: edit.kind, value },
+                      setEdit((current) =>
+                        current?.kind === 'upstream'
+                          ? value.protocol === current.value?.protocol
+                            ? { ...current, value }
+                            : { id: current.id, kind: current.kind, value }
+                          : current,
                       )
                     }
                     writeCredential={(credential, clear_credential) =>
-                      setEdit({
-                        id: edit.id,
-                        kind: edit.kind,
-                        value: edit.value,
-                        ...(credential ? { credential } : {}),
-                        clear_credential,
-                      })
+                      setEdit((current) =>
+                        current?.kind === 'upstream'
+                          ? {
+                              id: current.id,
+                              kind: current.kind,
+                              value: current.value,
+                              ...(credential ? { credential } : {}),
+                              clear_credential,
+                            }
+                          : current,
+                      )
                     }
                   />
                 )}

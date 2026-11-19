@@ -1990,9 +1990,10 @@ fn health(store: &Store, c: &Config, s: &Secrets, reference: &Reference) -> Resu
         }
         for (&id, upstream) in &catalogue.upstreams {
             if upstream.enabled {
-                let outbound = crate::egress::upstream(id, upstream, s.upstreams.get(&id))?;
-                check_client_outbound(reference, outbound)
-                    .with_context(|| format!("Upstream {id} connectivity check failed"))?;
+                for path in crate::egress::probe_paths(c, s, id)? {
+                    check_client_outbounds(reference, path)
+                        .with_context(|| format!("Upstream {id} connectivity check failed"))?;
+                }
             }
         }
     }
@@ -2018,14 +2019,11 @@ pub(crate) fn test_upstream(store: &Store, upstream: uuid::Uuid) -> Result<()> {
     let _guard = store.lock()?;
     let id = store.pointer("current")?.context("not_deployed")?;
     let (config, secrets) = store.verify(&id)?;
-    let node = config
-        .management
-        .as_ref()
-        .and_then(|m| m.upstreams.get(&upstream))
-        .filter(|node| node.enabled)
-        .context("not_found")?;
-    let outbound = crate::egress::upstream(upstream, node, secrets.upstreams.get(&upstream))?;
-    check_client_outbound(&receipt(store, &id)?.reference, outbound)
+    let reference = receipt(store, &id)?.reference;
+    for path in crate::egress::probe_paths(&config, &secrets, upstream)? {
+        check_client_outbounds(&reference, path)?;
+    }
+    Ok(())
 }
 
 fn handshake(
@@ -2045,20 +2043,26 @@ fn handshake(
 }
 
 fn check_client_outbound(reference: &Reference, outbound: serde_json::Value) -> Result<()> {
+    check_client_outbounds(reference, vec![outbound])
+}
+
+fn check_client_outbounds(reference: &Reference, outbounds: Vec<serde_json::Value>) -> Result<()> {
     // Only the isolated fixture switches to the OS CA store for its local CA.
     #[cfg(feature = "integration-test")]
-    let outbound = {
-        let mut outbound = outbound;
-        if outbound["streamSettings"]["security"] == "tls" {
-            outbound["streamSettings"]["tlsSettings"]["useSystemCA"] = json!(true);
+    let outbounds = {
+        let mut outbounds = outbounds;
+        for outbound in &mut outbounds {
+            if outbound["streamSettings"]["security"] == "tls" {
+                outbound["streamSettings"]["tlsSettings"]["useSystemCA"] = json!(true);
+            }
         }
-        outbound
+        outbounds
     };
     let tmp = tempfile::tempdir()?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let profile = json!({"log":{"loglevel":"none"},"inbounds":[{"listen":"127.0.0.1","port":port,
-        "protocol":"socks","settings":{"auth":"noauth","udp":true}}],"outbounds":[outbound]});
+        "protocol":"socks","settings":{"auth":"noauth","udp":true}}],"outbounds":outbounds});
     let config = tmp.path().join("client.json");
     store::atomic_write(&config, &serde_json::to_vec(&profile)?)?;
     command(

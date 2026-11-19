@@ -1,5 +1,5 @@
 'use client';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { TabsView } from '@community-go/ui-adapter/data-display';
 import { SelectField, SwitchField, TextField } from '@community-go/ui-adapter/form-field';
 import type {
@@ -217,6 +217,10 @@ export function InboundForm({
   errors: Readonly<Record<string, string | undefined>>;
 }>) {
   const t = useNodeText();
+  const [expiry, setExpiry] = useState(
+    data.expires ? new Date(data.expires * 1000).toISOString() : '',
+  );
+
   const stack = inboundStack(data);
   const grpc = stack.transport === 'grpc';
   const dedicated = stack.listener === 'dedicated';
@@ -230,7 +234,9 @@ export function InboundForm({
   const listenerLabels = {
     'shared-https': t('catalogue.sharedHttps'),
     dedicated: t(
-      stack.transport === 'hysteria' || stack.transport === 'mkcp'
+      stack.transport === 'hysteria' ||
+        stack.transport === 'mkcp' ||
+        stack.transport === 'wireguard'
         ? 'catalogue.dedicatedUdp'
         : 'catalogue.dedicated',
     ),
@@ -441,6 +447,23 @@ export function InboundForm({
           }}
         />
       ) : null}
+      <TextField
+        label={t('catalogue.inboundExpiry')}
+        hint={t('access.accountExpiryHint')}
+        value={expiry}
+        error={errors.expires ?? ''}
+        onChange={(e) => {
+          const value = e.target.value;
+          setExpiry(value);
+          const next = { ...data };
+          if (!value.trim()) delete next.expires;
+          else {
+            const parsed = /Z$/i.test(value) ? Date.parse(value) : NaN;
+            next.expires = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+          }
+          update(next);
+        }}
+      />
       <SwitchField
         label={t('catalogue.enabled')}
         description=""

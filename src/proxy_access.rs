@@ -71,6 +71,14 @@ struct Account {
     quota_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ledger: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    traffic_cycle: Option<TrafficCycle>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct TrafficCycle {
+    interval_seconds: u64,
+    next_reset: u64,
 }
 
 impl Account {
@@ -98,6 +106,7 @@ impl Account {
             expires: None,
             quota_bytes: None,
             ledger: None,
+            traffic_cycle: None,
         })
     }
     fn verify(&self, password: &str) -> bool {
@@ -158,22 +167,64 @@ impl Access<'_> {
     fn write(&self, data: &Database) -> Result<()> {
         store::atomic_write(&self.dir().join("access.json"), &serde_json::to_vec(data)?)
     }
-    fn lock(&self) -> Result<fs::File> {
+    fn open_lock(&self) -> Result<fs::File> {
         store::private_dir(&self.0.state_dir)?;
         store::private_dir(&self.dir())?;
         let path = self.dir().join("lock");
         if path.exists() {
             store::check_private(&path, false)?;
         }
-        let f = fs::OpenOptions::new()
+        Ok(fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
+            .open(path)?)
+    }
+
+    fn lock(&self) -> Result<fs::File> {
+        let f = self.open_lock()?;
         f.lock_exclusive()?;
         Ok(f)
+    }
+
+    fn reset_due(&self, now: u64) -> Result<Option<Database>> {
+        let guard = self.open_lock()?;
+        guard.try_lock_exclusive()?;
+        let Some(mut data) = self.read()? else {
+            return Ok(None);
+        };
+        let mut reset = BTreeSet::new();
+        for (username, account) in &mut data.users {
+            let Some(cycle) = account
+                .traffic_cycle
+                .as_mut()
+                .filter(|cycle| cycle.next_reset <= now)
+            else {
+                continue;
+            };
+            ensure!(
+                (60..=366 * 86400).contains(&cycle.interval_seconds),
+                "Invalid traffic cycle"
+            );
+            let elapsed = now - cycle.next_reset;
+            cycle.next_reset =
+                now.saturating_add(cycle.interval_seconds - elapsed % cycle.interval_seconds);
+            account.ledger = Some(Uuid::new_v4());
+            reset.insert(username.clone());
+        }
+        if !reset.is_empty() {
+            for device in data
+                .devices
+                .values_mut()
+                .filter(|device| reset.contains(&device.username))
+            {
+                device.authenticated = None;
+            }
+            self.write(&data)?;
+        }
+        Ok(Some(data))
     }
 }
 
@@ -259,6 +310,10 @@ pub enum Change {
     ResetTraffic {
         username: String,
     },
+    TrafficCycle {
+        username: String,
+        interval_seconds: Option<u64>,
+    },
     CreateDevice {
         username: String,
         label: String,
@@ -300,7 +355,7 @@ impl Database {
             Ok(json!({
                 "username":username, "device_limit":account.device_limit,
                 "groups":account.groups, "disabled":account.disabled, "expires":account.expires,
-                "quota_bytes":account.quota_bytes, "traffic":usage,
+                "quota_bytes":account.quota_bytes, "traffic":usage, "traffic_cycle":account.traffic_cycle,
                 "devices":self.devices.iter().filter(|(_, device)| &device.username == username)
                     .map(|(id, device)| {
                         let expires = if available { self.expiry(device, now) } else { None };
@@ -312,7 +367,7 @@ impl Database {
         }).collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"enabled":self.enabled, "ttl_seconds":self.ttl_seconds, "portal":portal, "users":users,
-                "extra_profile_formats":["xray-config","links","qr","native"]}),
+                "extra_profile_formats":["xray-config","links","qr","native"], "traffic_cycles":true}),
         )
     }
 
@@ -398,9 +453,20 @@ pub fn list(store: &Store) -> Result<Value> {
 
 pub fn has_account_policies(store: &Store) -> Result<bool> {
     Ok(Access(store).read()?.is_some_and(|db| {
+        db.users.values().any(|a| {
+            a.disabled
+                || a.expires.is_some()
+                || a.quota_bytes.is_some()
+                || a.traffic_cycle.is_some()
+        })
+    }))
+}
+
+pub fn has_traffic_cycles(store: &Store) -> Result<bool> {
+    Ok(Access(store).read()?.is_some_and(|db| {
         db.users
             .values()
-            .any(|a| a.disabled || a.expires.is_some() || a.quota_bytes.is_some())
+            .any(|account| account.traffic_cycle.is_some())
     }))
 }
 
@@ -438,9 +504,10 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                         "managed_inbounds_require_proxy_access"
                     );
                     ensure!(
-                        data.users
-                            .values()
-                            .all(|a| !a.disabled && a.expires.is_none() && a.quota_bytes.is_none()),
+                        data.users.values().all(|a| !a.disabled
+                            && a.expires.is_none()
+                            && a.quota_bytes.is_none()
+                            && a.traffic_cycle.is_none()),
                         "policies_require_proxy_access"
                     );
                 }
@@ -545,6 +612,24 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
             for device in data.devices.values_mut().filter(|d| d.username == username) {
                 device.authenticated = None;
             }
+        }
+        Change::TrafficCycle {
+            username,
+            interval_seconds,
+        } => {
+            ensure!(
+                data.enabled || interval_seconds.is_none(),
+                "policies_require_proxy_access"
+            );
+            ensure!(
+                interval_seconds.is_none_or(|seconds| (60..=366 * 86400).contains(&seconds)),
+                "invalid_traffic_cycle"
+            );
+            let account = data.users.get_mut(&username).context("not_found")?;
+            account.traffic_cycle = interval_seconds.map(|seconds| TrafficCycle {
+                interval_seconds: seconds,
+                next_reset: admin_auth::now().saturating_add(seconds),
+            });
         }
         Change::CreateDevice { username, label } => {
             ensure!(data.users.contains_key(&username), "not_found");

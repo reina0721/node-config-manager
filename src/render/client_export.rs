@@ -61,6 +61,12 @@ fn profile_link(profile: &Value) -> Result<Option<ShareLink>> {
         other => other,
     };
     let protocol = text(&outbound["protocol"]);
+    if !matches!(
+        protocol,
+        "vless" | "vmess" | "trojan" | "shadowsocks" | "hysteria"
+    ) {
+        return Ok(None);
+    }
     let tls = text(&stream["security"]);
     let security = &stream[if tls == "reality" {
         "realitySettings"
@@ -172,38 +178,68 @@ pub(super) fn links(profiles: &Value) -> Result<Vec<ShareLink>> {
         .collect()
 }
 
-pub(super) fn native_profiles(profiles: &Value, selection: Option<&str>) -> Result<Value> {
-    let rows: Vec<_> = profiles["profiles"]
-        .as_array()
-        .context("Missing profiles")?
-        .iter()
-        .filter(|profile| profile["outbound"]["protocol"] == "hysteria")
-        .collect();
-    let id = |profile: &Value| crate::store::digest(text(&profile["name"]).as_bytes());
-    if let Some(selection) = selection {
-        let profile = rows
-            .iter()
-            .find(|profile| id(profile) == selection)
-            .context("not_found")?;
-        let outbound = &profile["outbound"];
-        let address = text(&outbound["settings"]["address"]);
-        let port = outbound["settings"]["port"]
-            .as_u64()
-            .context("Missing Hysteria port")?;
-        return Ok(json!({
-            "server":authority(address,port),
-            "auth":outbound["streamSettings"]["hysteriaSettings"]["auth"],
-            "tls":{"sni":outbound["streamSettings"]["tlsSettings"]["serverName"]},
-            "socks5":{"listen":"127.0.0.1:1080"}
-        }));
+fn native_kind(outbound: &Value) -> Option<&'static str> {
+    match outbound["protocol"].as_str()? {
+        "hysteria" => Some("native-hysteria"),
+        "wireguard" => Some("native-wireguard"),
+        _ => None,
     }
+}
+
+pub(super) fn native_list(profiles: &Value) -> Result<Value> {
+    let rows = profiles["profiles"]
+        .as_array()
+        .context("Missing profiles")?;
     Ok(json!(
         rows.iter()
-            .map(|profile| {
-                json!({"format":format!("native-hysteria/{}",id(profile)),"name":profile["name"]})
+            .filter_map(|profile| {
+                let kind = native_kind(&profile["outbound"])?;
+                let id = crate::store::digest(text(&profile["name"]).as_bytes());
+                Some(json!({"format":format!("{kind}/{id}"),"name":profile["name"]}))
             })
             .collect::<Vec<_>>()
     ))
+}
+
+pub(super) fn native_profile(profiles: &Value, kind: &str, id: &str) -> Result<Vec<u8>> {
+    let rows = profiles["profiles"]
+        .as_array()
+        .context("Missing profiles")?;
+    let profile = rows
+        .iter()
+        .find(|profile| {
+            native_kind(&profile["outbound"]) == Some(kind)
+                && crate::store::digest(text(&profile["name"]).as_bytes()) == id
+        })
+        .context("not_found")?;
+    let outbound = &profile["outbound"];
+    let settings = &outbound["settings"];
+    if kind == "native-wireguard" {
+        let addresses = settings["address"]
+            .as_array()
+            .context("Missing WireGuard addresses")?;
+        let peer = &settings["peers"][0];
+        let addresses = addresses
+            .iter()
+            .map(|address| {
+                let addr = text(address);
+                format!("{addr}/{}", if addr.contains(':') { 128 } else { 32 })
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Ok(format!(
+            "[Interface]\nPrivateKey = {}\nAddress = {addresses}\nMTU = 1280\n\n[Peer]\nPublicKey = {}\nEndpoint = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n",
+            text(&settings["secretKey"]), text(&peer["publicKey"]), text(&peer["endpoint"]),
+        ).into_bytes());
+    }
+    let address = text(&settings["address"]);
+    let port = settings["port"].as_u64().context("Missing Hysteria port")?;
+    Ok(serde_json::to_vec_pretty(&json!({
+        "server":authority(address,port),
+        "auth":outbound["streamSettings"]["hysteriaSettings"]["auth"],
+        "tls":{"sni":outbound["streamSettings"]["tlsSettings"]["serverName"]},
+        "socks5":{"listen":"127.0.0.1:1080"}
+    }))?)
 }
 
 pub(super) fn qr_sheet(profiles: &Value) -> Result<Vec<u8>> {

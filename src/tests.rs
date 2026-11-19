@@ -705,6 +705,7 @@ fn catalogue_validation_and_device_exports_preserve_builtins_and_group_scope() -
             flow: None,
             vless_encryption: None,
             fallback_parent: None,
+            expires: None,
         },
     );
     catalogue.hosts.insert(

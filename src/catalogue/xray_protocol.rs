@@ -1,4 +1,4 @@
-use super::{Inbound, Protocol, inbound_user};
+use super::{Inbound, Protocol, inbound_user, wireguard};
 use crate::config::Secrets;
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -17,6 +17,7 @@ impl Protocol {
             Self::Http => "http",
             Self::Mixed => "mixed",
             Self::Hysteria2 => "hysteria",
+            Self::Wireguard => "wireguard",
             _ => "vless",
         }
     }
@@ -49,7 +50,9 @@ pub(super) fn redactions(secrets: &Secrets, id: Uuid, protocol: Protocol) -> Vec
         return Vec::new();
     }
     let key = derive(secrets, id, Uuid::nil(), b"nodectl/locked/protocol");
-    if protocol == Protocol::Shadowsocks2022 {
+    if protocol == Protocol::Wireguard {
+        vec![wireguard::key_for_redaction(secrets, id)]
+    } else if protocol == Protocol::Shadowsocks2022 {
         vec![STANDARD.encode(key.as_bytes()), server_psk(secrets, id)]
     } else {
         vec![key.to_string()]
@@ -80,6 +83,10 @@ pub(super) fn configure_inbound(entry: &mut Value, inbound: &Inbound, id: Uuid, 
         entry["streamSettings"]["tlsSettings"]["alpn"] = json!(["http/1.1"]);
     }
     let placeholder = derive(secrets, id, Uuid::nil(), b"nodectl/locked/protocol");
+    if protocol == Protocol::Wireguard {
+        entry["settings"] = wireguard::inbound(secrets, id, placeholder);
+        return;
+    }
     let identity = user(protocol, placeholder, "nodectl-locked");
     let mut settings = match protocol {
         Protocol::Shadowsocks => json!({"network":"tcp,udp"}),
@@ -109,6 +116,23 @@ pub(crate) fn replace_accounts(
         entry["protocol"] == protocol.core_name(),
         "Unexpected managed core protocol"
     );
+    if protocol == Protocol::Wireguard {
+        let (id, _) = managed.context("Missing WireGuard resource")?;
+        let peers = accounts
+            .into_iter()
+            .map(|(device, alias)| wireguard::peer(secrets, id, device, &alias))
+            .collect::<Vec<_>>();
+        let mut assigned = std::collections::BTreeSet::new();
+        ensure!(
+            peers
+                .iter()
+                .flat_map(|peer| peer["allowedIPs"].as_array().unwrap())
+                .all(|address| assigned.insert(address.as_str().unwrap())),
+            "Duplicate WireGuard address allocation"
+        );
+        entry["settings"]["peers"] = json!(peers);
+        return Ok(());
+    }
     let original = entry["settings"]["clients"][0].clone();
     let accounts = accounts
         .into_iter()
@@ -170,6 +194,7 @@ pub(super) fn client(
             json!({"address":address,"port":port,"user":alias,"pass":key})
         }
         Protocol::Hysteria2 => json!({"address":address,"port":port,"version":2}),
+        Protocol::Wireguard => wireguard::outbound(secrets, id, device, address, port),
         _ => unreachable!("VLESS uses its own settings template"),
     };
     if protocol == Protocol::Hysteria2 {

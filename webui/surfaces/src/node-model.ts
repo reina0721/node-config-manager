@@ -1,7 +1,16 @@
 import { z } from 'zod';
 
 const toggle = z.object({ enabled: z.boolean() }).strict();
-const transportSchema = z.enum(['xhttp', 'ws', 'raw', 'hysteria', 'grpc', 'httpupgrade', 'mkcp']);
+const transportSchema = z.enum([
+  'xhttp',
+  'ws',
+  'raw',
+  'hysteria',
+  'grpc',
+  'httpupgrade',
+  'mkcp',
+  'wireguard',
+]);
 const securitySchema = z.enum(['none', 'tls', 'reality']);
 const listenerSchema = z.enum(['shared-https', 'dedicated', 'fallback']);
 const managedProtocol = z.enum([
@@ -13,6 +22,7 @@ const managedProtocol = z.enum([
   'http',
   'mixed',
   'hysteria2',
+  'wireguard',
 ]);
 const inboundProtocol = z.union([z.enum(['xhttp', 'ws', 'reality']), managedProtocol]);
 const inboundCapabilitiesSchema = z.object({
@@ -45,6 +55,7 @@ const managedInboundSchema = z
     flow: z.enum(['none', 'vision']).optional(),
     vless_encryption: z.boolean().optional(),
     fallback_parent: z.string().uuid().optional(),
+    expires: z.number().int().optional(),
     path: z.string(),
     port: z.number().int(),
     enabled: z.boolean(),
@@ -94,10 +105,13 @@ const upstreamSchema = z
       'shadowsocks',
       'shadowsocks-2022',
       'hysteria2',
+      'round-robin',
     ]),
     address: z.string(),
     port: z.number().int(),
     server_name: z.string(),
+    via: z.string().uuid().optional(),
+    members: z.array(z.string().uuid()).optional(),
   })
   .strict();
 const routingRuleSchema = z
@@ -490,10 +504,14 @@ export const proxyUsersSchema = z.array(
 );
 export const nativeProfileSchema = z.object({
   name: z.string(),
-  format: z.templateLiteral(['native-hysteria/', z.string().regex(/^[a-f0-9]{64}$/)]),
+  format: z.templateLiteral([
+    z.enum(['native-hysteria/', 'native-wireguard/']),
+    z.string().regex(/^[a-f0-9]{64}$/),
+  ]),
 });
 export type NativeProfile = z.infer<typeof nativeProfileSchema>;
 export const proxyAccessSchema = z.object({
+  traffic_cycles: z.boolean().optional(),
   extra_profile_formats: z.array(z.enum(['xray-config', 'links', 'qr', 'native'])).optional(),
   enabled: z.boolean(),
   ttl_seconds: z.number(),
@@ -506,6 +524,10 @@ export const proxyAccessSchema = z.object({
       disabled: z.boolean().default(false),
       expires: z.number().nullable().default(null),
       quota_bytes: z.number().nullable().default(null),
+      traffic_cycle: z
+        .object({ interval_seconds: z.number(), next_reset: z.number() })
+        .nullable()
+        .optional(),
       traffic: z
         .object({ upload: z.number(), download: z.number() })
         .default({ upload: 0, download: 0 }),
@@ -536,6 +558,7 @@ export type ProxyAccessChange =
     }
   | { action: 'group-members'; group: string; usernames: string[] }
   | { action: 'reset-traffic'; username: string }
+  | { action: 'traffic-cycle'; username: string; interval_seconds: number | null }
   | { action: 'create-device'; username: string; label: string }
   | { action: 'delete-device'; device: string };
 
