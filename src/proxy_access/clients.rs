@@ -13,11 +13,14 @@ pub(super) struct Client {
     pub(super) inbounds: BTreeSet<Uuid>,
     pub(super) usernames: BTreeSet<String>,
     pub(super) links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) claim_key: Option<Uuid>,
 }
 
 impl Client {
-    pub(super) fn view(&self, id: Uuid) -> Value {
-        json!({"id":id,"name":self.name,"inbounds":self.inbounds,"usernames":self.usernames,"link_count":self.links.len()})
+    pub(super) fn view(&self, id: Uuid, db: &Database) -> Value {
+        json!({"id":id,"name":self.name,"inbounds":self.inbounds,"usernames":self.usernames,"link_count":self.links.len(),
+            "claim_enabled":self.claim_key.is_some(),"claim_remaining":db.ready_installations(id)})
     }
 
     pub(super) fn restrict(&self, config: &Config) -> Config {
@@ -37,12 +40,39 @@ impl Client {
 }
 
 impl Database {
+    pub(super) fn membership(&self, device: &Device, username: &str) -> bool {
+        device.client.is_none_or(|id| {
+            self.clients
+                .get(&id)
+                .is_some_and(|profile| profile.usernames.contains(username))
+        })
+    }
+
     pub(super) fn client_allows(&self, device: &Device, inbound: Uuid) -> bool {
         device.client.is_none_or(|id| {
             self.clients.get(&id).is_some_and(|profile| {
                 profile.usernames.contains(&device.username) && profile.inbounds.contains(&inbound)
             })
         })
+    }
+
+    pub(super) fn install_on_inbound(
+        &self,
+        device: &Device,
+        catalogue: &catalogue::Catalogue,
+        inbound: Uuid,
+    ) -> bool {
+        if device.enrollment.is_some() {
+            return device
+                .client
+                .and_then(|id| self.clients.get(&id))
+                .is_some_and(|profile| profile.inbounds.contains(&inbound));
+        }
+        self.client_allows(device, inbound)
+            && self
+                .users
+                .get(&device.username)
+                .is_some_and(|account| catalogue.granted(&account.groups, inbound))
     }
 
     pub(super) fn save_client(
@@ -94,11 +124,19 @@ impl Database {
         let needs_runtime_update = self.clients.get(&id).is_some_and(|previous| {
             !previous.inbounds.is_superset(&profile.inbounds)
                 && self.devices.values().any(|device| {
-                    device.client == Some(id) && profile.usernames.contains(&device.username)
+                    device.client == Some(id)
+                        && (device.enrollment.is_some()
+                            || profile.usernames.contains(&device.username))
                 })
         });
+        profile.claim_key = self
+            .clients
+            .get(&id)
+            .and_then(|previous| previous.claim_key);
         self.devices.retain(|_, device| {
-            device.client != Some(id) || profile.usernames.contains(&device.username)
+            device.client != Some(id)
+                || device.username.is_empty()
+                || profile.usernames.contains(&device.username)
         });
         self.clients.insert(id, profile);
         Ok(needs_runtime_update)

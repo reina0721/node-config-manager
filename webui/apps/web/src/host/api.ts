@@ -141,13 +141,22 @@ export function createAdminApi(
     downloadClients,
     versions: () => request('versions', versionsSchema),
     proxyAccess: () => request('proxy-access', proxyAccessSchema),
-    clientLinks: async (id) =>
-      (
-        await request(
-          'proxy-access/client-links/' + encodeURIComponent(id),
-          z.object({ links: z.array(z.string()) }),
-        )
-      ).links,
+    clientDetails: (id) =>
+      request(
+        'proxy-access/client-links/' + encodeURIComponent(id),
+        z.object({ links: z.array(z.string()), claim_url: z.string().nullable().default(null) }),
+      ),
+    copyClientClaimLink: (url) => navigator.clipboard.writeText(url),
+    newClaimRequest: () => crypto.randomUUID(),
+    claimClient: async (id, claimRequest) => {
+      const result = await request('proxy-access', proxyAccessSchema, {
+        action: 'claim-client',
+        id,
+        request: claimRequest,
+      });
+      if (!result.created_device_id) throw new Error('后台未返回安装标识。');
+      return result.created_device_id;
+    },
     changeProxyAccess: (input) => request('proxy-access', proxyAccessSchema, input),
     downloadProxyUsers: async () => {
       const users = await request('proxy-access/export', proxyUsersSchema);

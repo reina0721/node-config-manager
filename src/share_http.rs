@@ -4,6 +4,7 @@ use crate::{
     store::{self, Store},
 };
 use anyhow::{Context, Result, ensure};
+use serde::Deserialize;
 use serde_json::json;
 use std::{
     fs,
@@ -11,6 +12,7 @@ use std::{
 };
 
 const LIMIT: usize = 8192;
+const CLAIM: &str = "/nodes/claim";
 pub const SOCKET: &str = "/run/nodectl-share/api.sock";
 pub fn health() -> Result<()> {
     #[cfg(unix)]
@@ -81,6 +83,7 @@ fn response(stream: &mut impl Write, status: u16, kind: &str, body: &[u8]) -> Re
         401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         429 => "Too Many Requests",
         _ => "Service Unavailable",
     };
@@ -161,6 +164,22 @@ fn route(
                 include_bytes!("../assets/share/app.css"),
             );
         }
+        "/nodes/claim/" => {
+            return response(
+                stream,
+                200,
+                "text/html; charset=utf-8",
+                include_bytes!("../assets/share/claim.html"),
+            );
+        }
+        "/nodes/claim.js" => {
+            return response(
+                stream,
+                200,
+                "application/javascript; charset=utf-8",
+                include_bytes!("../assets/share/claim.js"),
+            );
+        }
         _ => {}
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
@@ -168,6 +187,7 @@ fn route(
         "/nodes/api" | "/nodes/sub/xray" => "xray",
         "/nodes/sub/mihomo" => "mihomo",
         "/nodes/sub/mihomo-weighted" => "mihomo-weighted",
+        "/nodes/sub/xray-config" => "xray-config",
         _ => return error(stream, 404),
     };
     let bearer = header(request, "authorization")?.and_then(|v| v.strip_prefix("Bearer "));
@@ -220,6 +240,36 @@ fn route(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Claim {
+    key: uuid::Uuid,
+    request: uuid::Uuid,
+}
+
+fn claim(
+    store: &Store,
+    request: &httparse::Request<'_, '_>,
+    body: &[u8],
+    stream: &mut impl Write,
+) -> Result<()> {
+    ensure!(
+        header(request, "content-type")? == Some("application/json"),
+        "Invalid claim request"
+    );
+    let origin = header(request, "origin")?.context("Missing origin")?;
+    let input: Claim = serde_json::from_slice(body)?;
+    let (status, payload) =
+        crate::proxy_access::claim_client_subscription(store, input.key, input.request, origin)
+            .unwrap_or_else(|_| (503, json!({"error":"unavailable"})));
+    response(
+        stream,
+        status,
+        "application/json; charset=utf-8",
+        &serde_json::to_vec(&payload)?,
+    )
+}
+
 pub(crate) fn connection(store: &Store, stream: &mut (impl Read + Write)) -> Result<()> {
     let mut bytes = Vec::with_capacity(LIMIT);
     loop {
@@ -236,6 +286,32 @@ pub(crate) fn connection(store: &Store, stream: &mut (impl Read + Write)) -> Res
         let mut request = httparse::Request::new(&mut headers);
         match request.parse(&bytes) {
             Ok(httparse::Status::Partial) => continue,
+            Ok(httparse::Status::Complete(length))
+                if request.method == Some("POST") && request.path == Some(CLAIM) =>
+            {
+                let content_length = header(&request, "content-length")
+                    .ok()
+                    .flatten()
+                    .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
+                    .and_then(|value| value.parse::<usize>().ok());
+                let Some(content_length) =
+                    content_length.filter(|length| (1..=1024).contains(length))
+                else {
+                    return error(stream, 400);
+                };
+                if !matches!(header(&request, "transfer-encoding"), Ok(None))
+                    || bytes.len() > length + content_length
+                {
+                    return error(stream, 400);
+                }
+                if bytes.len() < length + content_length {
+                    continue;
+                }
+                if claim(store, &request, &bytes[length..], stream).is_err() {
+                    return error(stream, 400);
+                }
+                return Ok(());
+            }
             Ok(httparse::Status::Complete(length)) if length == bytes.len() => {
                 // Suppress internal details on every response/error path.
                 if route(store, &request, stream).is_err() {

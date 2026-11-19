@@ -703,14 +703,11 @@ pub(super) fn overlay(
                 .iter()
                 .filter(|(_, device)| {
                     managed_id.is_none_or(|managed_id| {
-                        database.client_allows(device, *managed_id)
-                            && database.users.get(&device.username).is_some_and(|account| {
-                                config
-                                    .management
-                                    .as_ref()
-                                    .unwrap()
-                                    .granted(&account.groups, *managed_id)
-                            })
+                        database.install_on_inbound(
+                            device,
+                            config.management.as_ref().unwrap(),
+                            *managed_id,
+                        )
                     })
                 })
                 .map(|(id, _)| (*id, device_alias(*id))),

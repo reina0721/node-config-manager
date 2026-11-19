@@ -40,7 +40,13 @@ impl Admission {
         let mut capacity = HashMap::new();
         if db.enabled {
             for (profile, device) in &db.devices {
+                if device.awaiting_login(now) {
+                    result.portals.insert(device.portal, *profile);
+                }
                 if let Some(account) = db.users.get(&device.username) {
+                    if !db.membership(device, &device.username) {
+                        continue;
+                    }
                     result.portals.insert(device.portal, *profile);
                     if let Some(expiry) = db.expiry(device, now) {
                         let expiry = account
@@ -108,9 +114,11 @@ fn state_revision(path: &std::path::Path) -> Option<(u64, i64, i64)> {
 }
 
 pub(super) async fn serve(store: &Store) -> Result<()> {
+    let listener = TcpListener::bind(runtime::GATE).await?;
+    super::enrollment::start(store)?;
     serve_on(
         store,
-        TcpListener::bind(runtime::GATE).await?,
+        listener,
         PathBuf::from(runtime::BACKEND),
         runtime::installed,
     )
@@ -504,35 +512,39 @@ fn authenticate(store: &Store, id: Uuid, login: Login) -> Result<LoginResult> {
         return Ok(LoginResult::Rate);
     }
     device.attempts.push(now);
-    let username = &device.username;
-    let Some(account) = data.users.get(username) else {
+    let enrollment = device.awaiting_login(now);
+    let authenticated = device.authenticated.is_some();
+    let belongs = device.username == login.username || enrollment;
+    let allowed = belongs && data.membership(&data.devices[&id], &login.username);
+    let Some(account) = data.users.get(&login.username).filter(|_| allowed) else {
+        access.write(&data)?;
         return Ok(LoginResult::Denied);
     };
     let budget = Budget {
         ledger: account.ledger_id(),
         quota: account.quota_bytes,
     };
-    let outcome = if username != &login.username
-        || !account.verify(&login.password)
-        || !account.active(now)
-        || !budget.can_send(store)?
-    {
-        LoginResult::Denied
-    } else if device.authenticated.is_none()
-        && data
-            .devices
-            .values()
-            .filter(|d| d.username == login.username && d.authenticated.is_some())
-            .count()
-            >= usize::from(account.device_limit)
-    {
-        LoginResult::Limit
-    } else {
-        let device = data.devices.get_mut(&id).context("Missing device")?;
-        device.authenticated = Some(now);
-        device.attempts.clear();
-        LoginResult::Success
-    };
+    let outcome =
+        if !account.verify(&login.password) || !account.active(now) || !budget.can_send(store)? {
+            LoginResult::Denied
+        } else if !authenticated
+            && data
+                .devices
+                .values()
+                .filter(|d| d.username == login.username && d.authenticated.is_some())
+                .count()
+                >= usize::from(account.device_limit)
+        {
+            LoginResult::Limit
+        } else {
+            let device = data.devices.get_mut(&id).context("Missing device")?;
+            if enrollment {
+                device.username = login.username;
+            }
+            device.authenticated = Some(now);
+            device.attempts.clear();
+            LoginResult::Success
+        };
     access.write(&data)?;
     Ok(outcome)
 }

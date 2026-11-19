@@ -603,10 +603,13 @@ export const proxyAccessSchema = z.object({
         inbounds: z.array(z.string()),
         usernames: z.array(z.string()),
         link_count: z.number(),
+        claim_enabled: z.boolean().default(false),
+        claim_remaining: z.number().int().nonnegative().default(0),
       }),
     )
     .default([]),
   traffic_cycles: z.boolean().optional(),
+  enrollment_supported: z.boolean().optional(),
   extra_profile_formats: z.array(z.enum(['xray-config', 'links', 'qr', 'native'])).optional(),
   enabled: z.boolean(),
   ttl_seconds: z.number(),
@@ -632,6 +635,7 @@ export const proxyAccessSchema = z.object({
           id: z.string(),
           label: z.string(),
           client: z.string().nullable().default(null),
+          enrolled: z.boolean().default(false),
           expires: z.number().nullable(),
           connections: z.number().default(0),
         }),
@@ -650,6 +654,8 @@ export type ProxyAccessChange =
       links: string[];
     }
   | { action: 'delete-client'; id: string }
+  | { action: 'prepare-client'; id: string; count: number }
+  | { action: 'claim-client'; id: string; request: string }
   | { action: 'settings'; enabled: boolean; ttl_seconds: number }
   | { action: 'create'; users: { username: string; password: string; device_limit?: number }[] }
   | { action: 'import'; users: z.infer<typeof proxyUsersSchema> }

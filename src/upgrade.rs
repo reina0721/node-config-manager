@@ -115,6 +115,9 @@ fn snapshot_minimum(store: &Store) -> Result<[u64; 3]> {
     if proxy_access::has_client_definitions(store)? {
         minimum = minimum.max(SHARED_CONSOLE_MINIMUM);
     }
+    if proxy_access::has_enrollment(store)? {
+        minimum = minimum.max([0, 12, 0]);
+    }
     for pointer in ["current", "previous"] {
         if let Some(id) = store.pointer(pointer)? {
             let (config, _, manifest) = store.verify_with_manifest(&id)?;

@@ -1,6 +1,8 @@
 //! Browser leases authorize device profiles independently of release snapshots.
 pub(crate) mod amneziawg;
 mod clients;
+mod enrollment;
+pub(crate) use enrollment::request_claim as claim_client_subscription;
 mod gateway;
 pub(crate) mod masque;
 mod meter;
@@ -161,6 +163,8 @@ struct Device {
     portal: Uuid,
     authenticated: Option<u64>,
     attempts: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enrollment: Option<enrollment::Enrollment>,
 }
 
 struct Access<'a>(&'a Store);
@@ -354,6 +358,14 @@ pub enum Change {
     DeleteClient {
         id: Uuid,
     },
+    PrepareClient {
+        id: Uuid,
+        count: usize,
+    },
+    ClaimClient {
+        id: Uuid,
+        request: Uuid,
+    },
 }
 
 impl Database {
@@ -394,6 +406,7 @@ impl Database {
                     .map(|(id, device)| {
                         let expires = if available { self.expiry(device, now) } else { None };
                         json!({"id":id,"label":device.label,"expires":expires,"client":device.client,
+                            "enrolled":device.enrollment.is_some(),
                             "connections": if expires.is_some() { online.get(id).copied().unwrap_or(0) } else { 0 }})
                     })
                     .collect::<Vec<_>>()
@@ -401,7 +414,8 @@ impl Database {
         }).collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"enabled":self.enabled, "ttl_seconds":self.ttl_seconds, "portal":portal, "users":users,
-                "clients":self.clients.iter().map(|(id, client)| client.view(*id)).collect::<Vec<_>>(),
+                "clients":self.clients.iter().map(|(id, client)| client.view(*id, self)).collect::<Vec<_>>(),
+                "enrollment_supported":true,
                 "extra_profile_formats":["xray-config","links","qr","native"], "traffic_cycles":true}),
         )
     }
@@ -511,10 +525,25 @@ pub(crate) fn has_client_definitions(store: &Store) -> Result<bool> {
         .is_some_and(|db| !db.clients.is_empty()))
 }
 
+pub(crate) fn has_enrollment(store: &Store) -> Result<bool> {
+    Ok(Access(store)
+        .read()?
+        .is_some_and(|db| db.clients.values().any(|client| client.claim_key.is_some())))
+}
+
 pub(crate) fn client_links(store: &Store, id: Uuid) -> Result<Value> {
     let data = Access(store).read()?.context("not_found")?;
     let client = data.clients.get(&id).context("not_found")?;
-    Ok(json!({"links": client.links}))
+    let claim_url = if let Some(key) = client.claim_key {
+        let config = runtime::installed(store)?;
+        Some(format!(
+            "{}/nodes/claim/#{key}",
+            enrollment::origin(&config)
+        ))
+    } else {
+        None
+    };
+    Ok(json!({"links": client.links, "claim_url": claim_url}))
 }
 
 pub fn export(store: &Store) -> Result<Value> {
@@ -530,6 +559,8 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
             | Change::GroupMembers { .. }
             | Change::SaveClient { .. }
             | Change::DeleteClient { .. }
+            | Change::PrepareClient { .. }
+            | Change::ClaimClient { .. }
     )
     .then(|| store.lock())
     .transpose()?;
@@ -551,6 +582,12 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
             );
             if enabled != data.enabled {
                 if !enabled {
+                    ensure!(
+                        data.clients
+                            .values()
+                            .all(|client| client.claim_key.is_none()),
+                        "enrollment_requires_proxy_access"
+                    );
                     ensure!(
                         !crate::catalogue::requires_access(&runtime::installed(store)?),
                         "managed_inbounds_require_proxy_access"
@@ -723,6 +760,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                     portal: Uuid::new_v4(),
                     authenticated: None,
                     attempts: vec![],
+                    enrollment: None,
                 },
             );
             created_device_id = Some(id);
@@ -750,6 +788,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                     inbounds,
                     usernames,
                     links,
+                    claim_key: None,
                 },
             )?;
             if refresh_xray {
@@ -759,6 +798,18 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
         Change::DeleteClient { id } => {
             data.clients.remove(&id).context("not_found")?;
             data.devices.retain(|_, device| device.client != Some(id));
+        }
+        Change::PrepareClient { id, count } => {
+            let config = runtime::installed(store)?;
+            ensure!(config.distributes(), "enrollment_requires_distribution");
+            data.prepare_enrollment(id, count, admin_auth::now())?;
+            runtime::validate(store, binary)?;
+            refresh_xray = true;
+        }
+        Change::ClaimClient { id, request } => {
+            let config = runtime::installed(store)?;
+            ensure!(config.distributes(), "enrollment_requires_distribution");
+            created_device_id = Some(data.claim_installation(id, request, admin_auth::now())?);
         }
     }
     let mode_changed = previous.enabled != data.enabled;
@@ -811,23 +862,13 @@ pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {
     let (config, secrets) = store.verify(&current)?;
     let data = Access(store).read()?.context("not_found")?;
     let device = data.devices.get(&id).context("not_found")?;
-    ensure!(
-        data.users
-            .get(&device.username)
-            .is_some_and(|account| account.active(admin_auth::now())),
-        "not_found"
-    );
+    data.profile_access(device, admin_auth::now())
+        .context("not_found")?;
     if format == "subscriptions" {
         ensure!(data.enabled && config.distributes(), "not_found");
         let key = crate::share::device_key(store)?;
         let token = subscription_token(&key, id, device);
-        let port = config.ports.https;
-        let domain = &config.node.domain;
-        let origin = if port == 443 {
-            format!("https://{domain}")
-        } else {
-            format!("https://{domain}:{port}")
-        };
+        let origin = enrollment::origin(&config);
         let login = runtime::portal(&config);
         return Ok(serde_json::to_string_pretty(&json!({
             "token": token,
@@ -835,6 +876,7 @@ pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {
             "mihomo": format!("{origin}/nodes/sub/mihomo?token={token}"),
             "mihomo-weighted": format!("{origin}/nodes/sub/mihomo-weighted?token={token}"),
             "xray": format!("{origin}/nodes/sub/xray?token={token}"),
+            "xray-config": format!("{origin}/nodes/sub/xray-config?token={token}"),
             "browser_login":login,
             "browser_login_route":crate::render::private_portal_host(&login)
                 .map(|hostname| format!("DOMAIN,{hostname},nodectl-auth")),
@@ -867,16 +909,11 @@ pub(crate) fn subscription_device(store: &Store, token: &str) -> Result<Option<U
     let Some(data) = Access(store).read()?.filter(|data| data.enabled) else {
         return Ok(None);
     };
-    let Some(device) = data.devices.get(&id).filter(|device| {
-        data.users
-            .get(&device.username)
-            .is_some_and(|account| account.active(admin_auth::now()))
-            && device.client.is_none_or(|id| {
-                data.clients
-                    .get(&id)
-                    .is_some_and(|profile| profile.usernames.contains(&device.username))
-            })
-    }) else {
+    let Some(device) = data
+        .devices
+        .get(&id)
+        .filter(|device| data.profile_access(device, admin_auth::now()).is_some())
+    else {
         return Ok(None);
     };
     let Ok(key) = crate::share::device_key(store) else {
@@ -899,23 +936,20 @@ pub(crate) fn render_profile(
 ) -> Result<Vec<u8>> {
     let data = Access(store).read()?.context("not_found")?;
     let device = data.devices.get(&id).context("not_found")?;
-    let account = data.users.get(&device.username).context("not_found")?;
-    ensure!(account.active(admin_auth::now()), "not_found");
+    let now = admin_auth::now();
+    let access = data.profile_access(device, now).context("not_found")?;
     let no_groups = BTreeSet::new();
-    let groups = if data.enabled {
-        &account.groups
-    } else {
-        &no_groups
+    let groups = match access {
+        enrollment::ProfileAccess::Account(account) if data.enabled => &account.groups,
+        _ => &no_groups,
     };
     let client = device
         .client
         .map(|id| data.clients.get(&id).context("not_found"))
         .transpose()?;
-    ensure!(
-        client.is_none_or(|profile| profile.usernames.contains(&device.username)),
-        "not_found"
-    );
     let scoped = client.map(|profile| profile.restrict(config));
+    let external =
+        client.filter(|_| device.enrollment.is_none() || data.expiry(device, now).is_some());
     crate::render::device_profiles_with_links(
         scoped.as_ref().unwrap_or(config),
         secrets,
@@ -923,6 +957,6 @@ pub(crate) fn render_profile(
         groups,
         format,
         &runtime::portal(config),
-        client.map(|profile| profile.links.as_slice()),
+        external.map(|profile| profile.links.as_slice()),
     )
 }

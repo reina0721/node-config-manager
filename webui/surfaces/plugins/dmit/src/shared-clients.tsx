@@ -10,6 +10,7 @@ import { useNodeManagement, type ProxyAccess } from '../../../src/node-managemen
 import { EditorDrawer } from './collection-controls';
 import { ConsoleLink, useNodeQuery, useNodeText } from './common';
 import ClientDeviceDownloads from './client-device-downloads';
+import ClientEnrollment from './client-enrollment';
 
 type Client = ProxyAccess['clients'][number];
 type Draft = {
@@ -40,6 +41,7 @@ export default function SharedClients({
   const configuration = useNodeQuery(api.configuration);
   const [draft, setDraft] = useState<Draft>();
   const [downloadTarget, setDownloadTarget] = useState<string | null>();
+  const [enrollmentTarget, setEnrollmentTarget] = useState<string>();
   const [baseline, setBaseline] = useState<Draft>();
   const [confirm, setConfirm] = useState<'save' | 'delete'>();
   const [error, setError] = useState('');
@@ -56,7 +58,7 @@ export default function SharedClients({
         name: client?.name ?? '',
         users: client?.usernames ?? [],
         inbounds: client?.inbounds ?? [],
-        links: client ? (await api.clientLinks(client.id)).join('\n') : '',
+        links: client ? (await api.clientDetails(client.id)).links.join('\n') : '',
       };
       setBaseline(current);
       setDraft(current);
@@ -99,6 +101,7 @@ export default function SharedClients({
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
   const revokes = Boolean(draft?.client?.usernames.some((name) => !draft.users.includes(name)));
   const downloadClient = data.clients.find((client) => client.id === downloadTarget);
+  const enrollmentClient = data.clients.find((client) => client.id === enrollmentTarget);
   return (
     <>
       <Section
@@ -149,9 +152,34 @@ export default function SharedClients({
               label: t('common.operation'),
               render: (client) => (
                 <div className="flex flex-wrap gap-2">
-                  <Action size="sm" disabled={busy} onPress={() => setDownloadTarget(client.id)}>
-                    {t('sharedClients.deviceDownloads')}
-                  </Action>
+                  {data.enrollment_supported && (
+                    <Action
+                      size="sm"
+                      disabled={busy}
+                      onPress={() => setEnrollmentTarget(client.id)}
+                    >
+                      {t('sharedClients.enrollment')}
+                    </Action>
+                  )}
+                  {(!data.enrollment_supported ||
+                    data.users.some((user) =>
+                      user.devices.some(
+                        (device) => device.client === client.id && !device.enrolled,
+                      ),
+                    )) && (
+                    <Action
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy}
+                      onPress={() => setDownloadTarget(client.id)}
+                    >
+                      {t(
+                        data.enrollment_supported
+                          ? 'sharedClients.legacyDownloads'
+                          : 'sharedClients.deviceDownloads',
+                      )}
+                    </Action>
+                  )}
                   <Action
                     size="sm"
                     variant="secondary"
@@ -187,6 +215,15 @@ export default function SharedClients({
           subscriptions={subscriptions}
           refresh={refresh}
           onClose={() => setDownloadTarget(undefined)}
+        />
+      )}
+      {enrollmentClient && (
+        <ClientEnrollment
+          key={enrollmentClient.id}
+          client={enrollmentClient}
+          available={data.enabled && subscriptions}
+          refresh={refresh}
+          onClose={() => setEnrollmentTarget(undefined)}
         />
       )}
       {draft && (

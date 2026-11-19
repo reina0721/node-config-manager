@@ -145,12 +145,7 @@ pub(super) fn render(
         }
         rules.push(health_rule);
         for (device_id, device) in &db.devices {
-            if !db.client_allows(device, id)
-                || !db
-                    .users
-                    .get(&device.username)
-                    .is_some_and(|account| catalogue.granted(&account.groups, id))
-            {
+            if !db.install_on_inbound(device, catalogue, id) {
                 continue;
             }
             let name = catalogue::device_alias(*device_id);

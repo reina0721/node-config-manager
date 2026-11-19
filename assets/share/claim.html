@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>领取客户端配置</title>
+    <link rel="stylesheet" href="/nodes/app.css">
+    <script defer src="/nodes/claim.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>领取客户端配置</h1>
+      <p>为当前设备领取配置并导入。启用节点后，在浏览器打开认证地址，使用已获准的账号登录。</p>
+      <button id="claim" type="button">领取配置</button>
+      <p id="message" role="status"></p>
+      <section id="formats" hidden>
+        <h2>订阅和下载</h2>
+        <p>请将此设备的订阅地址保存在客户端。登录后刷新订阅，可获取账号有权限使用的附加入站及外部节点。</p>
+        <ul>
+          <li><button id="copy" type="button">复制 Mihomo 订阅地址</button></li>
+          <li><a id="mihomo" download="nodectl-mihomo.yaml">下载 Mihomo 配置</a></li>
+          <li><a id="xray" download="nodectl-xray.json">下载完整 Xray 配置</a></li>
+          <li><a id="portal" rel="noreferrer">打开节点认证页</a></li>
+        </ul>
+        <label for="subscription">此设备的 Mihomo 订阅地址</label>
+        <input id="subscription" type="text" readonly spellcheck="false">
+      </section>
+      <button id="another" type="button" hidden>为另一台设备领取</button>
+    </main>
+  </body>
+</html>

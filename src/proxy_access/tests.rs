@@ -21,7 +21,58 @@ fn device() -> Device {
         portal: Uuid::new_v4(),
         authenticated: None,
         attempts: vec![],
+        enrollment: None,
     }
+}
+
+#[test]
+fn enrollment_is_bounded_and_unbound_claims_are_idempotent() -> Result<()> {
+    use super::enrollment::ProfileAccess;
+    let config: crate::config::Config = toml::from_str(crate::config::EXAMPLE)?;
+    let mut db = Database {
+        enabled: true,
+        ..Default::default()
+    };
+    db.add_users(vec![("alice", "test-password", 1)])?;
+    db.save_client(
+        &config,
+        None,
+        clients::Client {
+            name: "shared".into(),
+            inbounds: BTreeSet::new(),
+            usernames: BTreeSet::from(["alice".into()]),
+            links: vec![],
+            claim_key: None,
+        },
+    )?;
+    let client = *db.clients.keys().next().unwrap();
+    let request = Uuid::new_v4();
+    assert!(db.claim_installation(client, request, 100).is_err());
+    db.prepare_enrollment(client, 1, 100)?;
+    let key = db.clients[&client].claim_key;
+    let first = db.claim_installation(client, request, 100)?;
+    assert_eq!(db.claim_installation(client, request, 101)?, first);
+    assert_eq!(db.ready_installations(client), 0);
+    assert_eq!(
+        db.claim_installation(client, Uuid::new_v4(), 100)
+            .unwrap_err()
+            .to_string(),
+        "enrollment_exhausted"
+    );
+    assert!(matches!(
+        db.profile_access(&db.devices[&first], 100),
+        Some(ProfileAccess::Bootstrap)
+    ));
+    assert!(db.expiry(&db.devices[&first], 100).is_none());
+    assert!(
+        db.profile_access(&db.devices[&first], 100 + 86400)
+            .is_none()
+    );
+    db.prepare_enrollment(client, 1, 100 + 86400)?;
+    assert_eq!(db.clients[&client].claim_key, key);
+    assert!(!db.devices.contains_key(&first));
+    assert_ne!(db.claim_installation(client, request, 100 + 86400)?, first);
+    Ok(())
 }
 
 #[test]
@@ -40,6 +91,7 @@ fn shared_client_assignments_revoke_only_the_removed_users_device() -> Result<()
         inbounds: BTreeSet::new(),
         usernames: BTreeSet::from(["alice".into(), "bob".into()]),
         links: vec![],
+        claim_key: None,
     };
     db.save_client(&config, None, profile.clone())?;
     let id = *db.clients.keys().next().unwrap();
@@ -105,6 +157,7 @@ fn shared_client_attachments_are_intersected_with_account_groups() -> Result<()>
         inbounds: BTreeSet::from([selected]),
         usernames: BTreeSet::new(),
         links: vec![],
+        claim_key: None,
     };
     let config = definition.restrict(&config);
     for groups in [BTreeSet::from([group]), BTreeSet::new()] {

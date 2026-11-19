@@ -196,9 +196,10 @@ pub fn openapi() -> Value {
         ),
         (
             "/proxy-access",
-            "Change account, device or browser authorization state",
+            "Change accounts, devices, client assignments and subscription enrollment. prepare-client accepts a client id and count (1–32). claim-client accepts a client id and an idempotency request UUID.",
             json!({"type":"object","required":["action"],"properties":{"action":{"enum":[
-            "settings","create","import","delete","edit","create-device","delete-device","policy","group-members","reset-traffic","traffic-cycle"]}}}),
+            "settings","create","import","delete","edit","create-device","delete-device","policy","group-members","reset-traffic","traffic-cycle",
+            "save-client","delete-client","prepare-client","claim-client"]},"id":{"type":"string","format":"uuid"},"count":{"type":"integer","minimum":1,"maximum":32},"request":{"type":"string","format":"uuid"}}}),
             false,
         ),
         (

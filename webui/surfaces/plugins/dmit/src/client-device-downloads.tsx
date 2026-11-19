@@ -53,7 +53,9 @@ export default function ClientDeviceDownloads({
           ? 'expired'
           : null;
   const clientId = client?.id ?? null;
-  const devices = user?.devices.filter((device) => device.client === clientId) ?? [];
+  const devices =
+    user?.devices.filter((device) => device.client === clientId && !device.enrolled) ?? [];
+  const canIssue = !client || !data.enrollment_supported;
   if (
     issued &&
     issued.source === data &&
@@ -70,7 +72,7 @@ export default function ClientDeviceDownloads({
     new TextEncoder().encode(name.trim()).length <= 96 &&
     !/\p{Cc}/u.test(name);
   const issue = async () => {
-    if (!user || blockedReason || busy || !nameValid) return;
+    if (!user || !canIssue || blockedReason || busy || !nameValid) return;
     setBusy(true);
     setError('');
     try {
@@ -170,25 +172,27 @@ export default function ClientDeviceDownloads({
                   refresh={refresh}
                 />
               )}
-              <div className="grid gap-3 border-t border-border pt-4">
-                <TextField
-                  label={t('access.deviceName')}
-                  hint={data.enabled ? t('access.deviceHint') : ''}
-                  value={name}
-                  disabled={busy || Boolean(blockedReason)}
-                  onChange={(event) => setName(event.target.value)}
-                />
-                <div>
-                  <Action
-                    variant="secondary"
-                    disabled={busy || Boolean(blockedReason) || !nameValid}
-                    loading={busy}
-                    onPress={() => void issue()}
-                  >
-                    {t('access.createDevice')}
-                  </Action>
+              {canIssue && (
+                <div className="grid gap-3 border-t border-border pt-4">
+                  <TextField
+                    label={t('access.deviceName')}
+                    hint={data.enabled ? t('access.deviceHint') : ''}
+                    value={name}
+                    disabled={busy || Boolean(blockedReason)}
+                    onChange={(event) => setName(event.target.value)}
+                  />
+                  <div>
+                    <Action
+                      variant="secondary"
+                      disabled={busy || Boolean(blockedReason) || !nameValid}
+                      loading={busy}
+                      onPress={() => void issue()}
+                    >
+                      {t('access.createDevice')}
+                    </Action>
+                  </div>
                 </div>
-              </div>
+              )}
             </>
           )}
         </>

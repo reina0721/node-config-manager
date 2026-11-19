@@ -103,12 +103,7 @@ fn render(c: &Config, s: &Secrets, db: &Database, pin: &str) -> Result<Vec<Insta
         )]);
         let mut aliases = BTreeMap::new();
         for (&profile, device) in &db.devices {
-            if db.client_allows(device, id)
-                && db
-                    .users
-                    .get(&device.username)
-                    .is_some_and(|account| catalogue.granted(&account.groups, id))
-            {
+            if db.install_on_inbound(device, catalogue, id) {
                 let name = catalogue::device_alias(profile);
                 credentials.insert(name.clone(), secret(s, id, profile, &c.node.domain));
                 aliases.insert(name, runtime::ingress_id(device.transit, &tag));
