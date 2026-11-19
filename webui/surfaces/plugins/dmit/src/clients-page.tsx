@@ -1,11 +1,14 @@
 'use client';
 import { lazy, Suspense } from 'react';
+import { TabsView } from '@community-go/ui-adapter/data-display';
 import { useNodeManagement } from '../../../src/node-management';
-import { NodePage, useNodeQuery, NodeLoading } from './common';
+import { NodePage, useNodeQuery, NodeLoading, useNodeText } from './common';
 const ProxyAccessPanel = lazy(() => import('./proxy-access-panel'));
+const SharedClients = lazy(() => import('./shared-clients'));
 
 export default function ClientsPage() {
   const api = useNodeManagement();
+  const t = useNodeText();
   const access = useNodeQuery(api.proxyAccess, 15000);
   const config = useNodeQuery(api.panel);
   return (
@@ -20,10 +23,27 @@ export default function ClientsPage() {
     >
       {access.data && (
         <Suspense fallback={<NodeLoading kind="collection" />}>
-          <ProxyAccessPanel
-            data={access.data}
-            subscriptions={config.data?.subscription_enabled ?? false}
-            refresh={access.refresh}
+          <TabsView
+            label={t('clients.title')}
+            variant="section"
+            items={[
+              {
+                id: 'users',
+                label: t('sharedClients.usersTab'),
+                content: (
+                  <ProxyAccessPanel
+                    data={access.data}
+                    subscriptions={config.data?.subscription_enabled ?? false}
+                    refresh={access.refresh}
+                  />
+                ),
+              },
+              {
+                id: 'definitions',
+                label: t('sharedClients.definitionsTab'),
+                content: <SharedClients data={access.data} refresh={access.refresh} />,
+              },
+            ]}
           />
         </Suspense>
       )}

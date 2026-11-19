@@ -43,9 +43,11 @@ pub enum Action {
         archive: Option<PathBuf>,
         #[arg(long)]
         execute: bool,
-        #[arg(long,default_value_t=9443,value_parser=clap::value_parser!(u16).range(1024..))]
-        port: u16,
+        #[arg(long)]
+        port: Option<u16>,
     },
+    /// Recover an interrupted shared HTTPS console installation.
+    RecoverShared,
     #[command(hide = true)]
     SwitchVersion {
         #[arg(long)]
@@ -68,6 +70,7 @@ pub enum Action {
 }
 pub fn run(store: Store, action: Action) -> Result<()> {
     match action {
+        Action::RecoverShared => crate::admin_install::recover_shared(&store)?,
         Action::SwitchVersion { version, port } => crate::upgrade::switch(&store, &version, port)?,
         Action::Install {
             assets,
@@ -75,6 +78,11 @@ pub fn run(store: Store, action: Action) -> Result<()> {
             execute,
             port,
         } => {
+            let port = port.unwrap_or(if store.inputs()?.0.shared_console {
+                443
+            } else {
+                9443
+            });
             if let Some(archive) = archive {
                 crate::admin_install::from_archive(&store, &archive, port, execute)?;
             } else {
@@ -229,6 +237,7 @@ struct App {
 fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/admin/api/{*path}", any(handle))
+        .route("/nc/api/{*path}", any(handle))
         .layer(DefaultBodyLimit::max(128 * 1024))
         .with_state(app)
 }
@@ -287,12 +296,16 @@ fn text<'a>(h: &'a HeaderMap, name: &str) -> Result<Option<&'a str>> {
         .map(|v| v.to_str().map_err(Into::into))
         .transpose()
 }
-fn cookie(h: &HeaderMap, development: bool) -> Result<String> {
-    let name = if development {
+fn cookie_name(development: bool, nc: bool) -> &'static str {
+    if development {
         "nodectl_admin_dev"
+    } else if nc {
+        "__Secure-nodectl_nc"
     } else {
         "__Host-nodectl_admin"
-    };
+    }
+}
+fn cookie(h: &HeaderMap, name: &str) -> Result<String> {
     let mut found = text(h, "cookie")?
         .unwrap_or("")
         .split(';')
@@ -380,6 +393,8 @@ async fn handle(
                 | "invalid_proxy_device_limit"
                 | "invalid_proxy_batch"
                 | "invalid_proxy_device"
+                | "invalid_client_definition"
+                | "invalid_client_inbound"
                 | "invalid_proxy_quota"
                 | "invalid_traffic_cycle"
                 | "invalid_upstream_chain"
@@ -416,6 +431,12 @@ async fn handle(
                 _ => 400,
             };
             let mut payload = json!({"error":code,"message":remedy(code)});
+            if let Some(line) = error
+                .strip_prefix("invalid_external_link:")
+                .and_then(|line| line.parse::<usize>().ok())
+            {
+                payload = json!({"error":"invalid_external_link","message":format!("第 {line} 个外部链接的协议、地址或参数无效，或不受支持。")});
+            }
             if let Some(field) = match code {
                 "invalid_inbound_stack" => Some("transport"),
                 "invalid_inbound_remark" => Some("remark"),
@@ -602,10 +623,12 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
         method == Method::GET || method == Method::POST,
         "method_not_allowed"
     );
+    let nc = uri.path().starts_with("/nc/api/");
     let path = uri
         .path()
-        .strip_prefix("/admin/api/")
+        .strip_prefix(if nc { "/nc/api/" } else { "/admin/api/" })
         .context("not_found")?;
+    let cookie_name = cookie_name(app.development, nc);
     let post = method == Method::POST;
     if post {
         ensure!(
@@ -629,15 +652,11 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
             None,
         )?;
         let (id, csrf) = result?;
-        let name = if app.development {
-            "nodectl_admin_dev"
-        } else {
-            "__Host-nodectl_admin"
-        };
+        let cookie_path = if nc { "/nc/" } else { "/" };
         return Ok((
             json!({"csrf":csrf,"expires_in":auth::SESSION_LIFETIME,"idle_timeout":auth::SESSION_IDLE_TIMEOUT}),
             Some(format!(
-                "{name}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
+                "{cookie_name}={id}; Path={cookie_path}; HttpOnly; SameSite=Strict; Max-Age={}{}",
                 auth::SESSION_LIFETIME,
                 if app.development { "" } else { "; Secure" }
             )),
@@ -659,7 +678,7 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
         }
         (path, true)
     } else {
-        id = cookie(h, app.development)?;
+        id = cookie(h, cookie_name)?;
         owner = store::digest(id.as_bytes());
         let mut auth = app.auth.lock().unwrap();
         auth.session(
@@ -700,6 +719,13 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
             "nodes" => read::nodes(&app.store)?,
             "proxy-access" => crate::proxy_access::list(&app.store)?,
             "proxy-access/export" => crate::proxy_access::export(&app.store)?,
+            p if p.starts_with("proxy-access/client-links/") => {
+                ensure!(!from_peer, "peer_scope_denied");
+                let id = uuid::Uuid::parse_str(&p["proxy-access/client-links/".len()..])
+                    .context("bad_request")?;
+                app.audit("proxy-access-client-links", "success", None)?;
+                crate::proxy_access::client_links(&app.store, id)?
+            }
             "versions" => crate::upgrade::versions(&app.store)?,
             p if p.starts_with("proxy-access/profile/") => {
                 let (id, format) = p["proxy-access/profile/".len()..]
@@ -981,6 +1007,7 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
                 action,
                 crate::proxy_access::Change::Delete { .. }
                     | crate::proxy_access::Change::DeleteDevice { .. }
+                    | crate::proxy_access::Change::DeleteClient { .. }
             );
             ensure!(
                 revocation || !app.busy.load(Ordering::SeqCst),
@@ -1564,7 +1591,7 @@ impl App {
             crate::upgrade::schedule(
                 &self.store,
                 input.version.as_deref().unwrap(),
-                origin.port_u16().context("Missing admin port")?,
+                origin.port_u16().unwrap_or(443),
             )?;
             return Ok(
                 json!({"version_switch_scheduled":true,"message":"版本切换已排队。后台重启后，请刷新页面并重新登录。"}),

@@ -72,6 +72,9 @@ impl Admission {
                                 for inbound in ingress {
                                     let expires = expiry.min(inbound.expires.unwrap_or(u64::MAX));
                                     if expires <= now
+                                        || inbound
+                                            .managed
+                                            .is_some_and(|id| !db.client_allows(device, id))
                                         || inbound.groups.as_ref().is_some_and(|groups| {
                                             groups.is_disjoint(&account.groups)
                                         })
@@ -313,17 +316,26 @@ async fn portal(
         addon_len == 0 && stream.read_u8().await? == 1,
         "Expected portal TCP connection"
     );
-    let _destination_port = stream.read_u16().await?;
-    let addr_len = match stream.read_u8().await? {
+    let destination_port = stream.read_u16().await?;
+    let address_type = stream.read_u8().await?;
+    let addr_len = match address_type {
         1 => 4,
         2 => usize::from(stream.read_u8().await?),
         3 => 16,
         _ => anyhow::bail!("Invalid portal address"),
     };
-    stream.read_exact(&mut [0u8; 255][..addr_len]).await?;
+    let mut address = [0; 255];
+    stream.read_exact(&mut address[..addr_len]).await?;
     let config = site(&store)?;
     let origin = runtime::portal(&config);
-    let cert = std::path::Path::new(&config.tls.domain_cert_dir);
+    let auth_domain = config.auth_domain();
+    if let Some(host) = &auth_domain {
+        ensure!(
+            address_type == 2 && destination_port == 443 && address[..addr_len] == *host.as_bytes(),
+            "Incorrect private authentication destination"
+        );
+    }
+    let cert = super::certificate::directory(&config)?;
     let chain = CertificateDer::pem_file_iter(cert.join("fullchain.pem"))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let key = PrivateKeyDer::from_pem_file(cert.join("privkey.pem"))?;
@@ -333,6 +345,15 @@ async fn portal(
     stream.write_all(&[0, 0]).await?;
     let mut tls = TlsAcceptor::from(Arc::new(tls)).accept(stream).await?;
     let request = request(&mut tls).await?;
+    if let Some(host) = &auth_domain {
+        ensure!(
+            tls.get_ref().1.server_name() == Some(host)
+                && request.host.as_deref().is_some_and(|authority| {
+                    authority == host || authority.strip_suffix(":443") == Some(host)
+                }),
+            "Invalid private authentication hostname"
+        );
+    }
     let reply = match (request.method.as_str(), request.path.as_str()) {
         ("GET" | "HEAD", "/") if request.body.is_empty() => {
             let mut reply = response(200, "OK", "登录以使用当前设备的代理节点。");
@@ -381,6 +402,7 @@ struct Request {
     method: String,
     path: String,
     origin: Option<String>,
+    host: Option<String>,
     content_type: Option<String>,
     body: Vec<u8>,
 }
@@ -427,6 +449,7 @@ async fn request(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<Request> {
                 method: parsed.method.context("Missing HTTP method")?.into(),
                 path: parsed.path.context("Missing HTTP path")?.into(),
                 origin: header("origin")?,
+                host: header("host")?,
                 content_type: header("content-type")?,
                 body: bytes[offset..].to_vec(),
             },

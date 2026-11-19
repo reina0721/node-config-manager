@@ -101,19 +101,19 @@ export function ApiPage() {
       refresh={q.refresh}
     >
       <Section title={t('api.authentication')} description={t('api.authDescription')} contentInset>
-        <Code>{`GET /admin/api/session
-POST /admin/api/catalogue/preview
+        <Code>{`GET /nc/api/session
+POST /nc/api/catalogue/preview
 Content-Type: application/json
 X-CSRF-Token: <csrf>
-Origin: https://<管理域名>:9443
+Origin: https://<测速域名>
 
 {"kind":"group","value":{"name":"demo","description":"","enabled":true,"inbounds":[],"hosts":[]}}`}</Code>
       </Section>
       <Section title={t('api.tasks')} description={t('api.taskDescription')} contentInset>
-        <Code>{`POST /admin/api/config/check
+        <Code>{`POST /nc/api/config/check
 {"plan":"<plan>"}
 
-GET /admin/api/jobs/<job>
+GET /nc/api/jobs/<job>
 {"finished":null,"phase":"check","ok":null}`}</Code>
       </Section>
       {q.data && (

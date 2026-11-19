@@ -29,7 +29,7 @@ test('真实 HTTPS 下的 17 页、移动导航、深色模式与可访问性', 
   });
   await mkdir(evidence, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto('/admin/dmit/');
+  await page.goto('/nc/dmit/');
   await expect(page.getByLabel('管理员 Token', { exact: true })).toBeVisible();
   await auditAccessibility(page);
   await page.screenshot({ path: resolve(evidence, 'login-1440.png'), fullPage: true });
@@ -100,7 +100,7 @@ test('真实 HTTPS 下的 17 页、移动导航、深色模式与可访问性', 
   await expect(page.getByRole('heading', { name: '节点运行总览', exact: true })).toBeVisible();
   await page.screenshot({ path: resolve(evidence, 'overview-390.png'), fullPage: true });
   for (const [name, file] of routes) {
-    await page.goto('/admin/dmit/' + file + '/');
+    await page.goto('/nc/dmit/' + file + '/');
     await expect(page.getByRole('heading', { name, exact: true, level: 1 })).toBeVisible();
   }
   expect(errors).toEqual([]);

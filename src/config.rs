@@ -36,7 +36,15 @@ model!(Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web_services: Option<WebServices>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    management: Option<crate::catalogue::Catalogue>
+    management: Option<crate::catalogue::Catalogue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth_portal: Option<AuthPortal>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    shared_console: bool
+});
+model!(AuthPortal {
+    root_domain: String,
+    prefix: String
 });
 model!(CnWarp {
     enabled: bool,
@@ -159,6 +167,11 @@ pub struct EncryptionSecrets {
     pub reality: EncryptionPair,
 }
 impl Config {
+    pub fn auth_domain(&self) -> Option<String> {
+        self.auth_portal
+            .as_ref()
+            .map(|portal| format!("{}.{}", portal.prefix, portal.root_domain))
+    }
     pub fn routes_cn(&self) -> bool {
         self.cn_warp.as_ref().is_some_and(|c| c.enabled)
     }
@@ -318,6 +331,16 @@ impl Config {
 }
 
 pub fn validate(c: &Config, s: &Secrets) -> Result<()> {
+    if let Some(portal) = &c.auth_portal {
+        let hostname = c.auth_domain().unwrap();
+        ensure!(
+            domain(&portal.root_domain)
+                && !portal.prefix.contains('.')
+                && domain(&hostname)
+                && !c.domains().contains(&hostname),
+            "Authentication hostname must be a distinct subdomain of the configured root domain"
+        );
+    }
     if let Some(cn) = &c.cn_warp {
         ensure!(
             cn.interface.len() <= 15
@@ -497,6 +520,20 @@ pub fn validate(c: &Config, s: &Secrets) -> Result<()> {
         &c.transport.ws.path,
         &c.transport.reality.path,
     ];
+    if c.shared_console {
+        ensure!(
+            c.ports.https == 443,
+            "The shared console requires HTTPS port 443"
+        );
+        ensure!(
+            paths.iter().all(|path| !overlap(path, "/nc/"))
+                && c.website
+                    .reserved_paths
+                    .iter()
+                    .all(|path| !overlap(path, "/nc/")),
+            "The /nc/ console path conflicts with an existing route"
+        );
+    }
     ensure!(
         route(paths[0], true)
             && route(paths[1], false)

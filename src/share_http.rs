@@ -205,7 +205,13 @@ fn route(
     };
     if path == "/nodes/api" {
         let profiles: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let portal = device.map(|_| crate::proxy_access::portal_url(store));
+        let route = portal
+            .as_deref()
+            .and_then(crate::render::private_portal_host)
+            .map(|hostname| format!("DOMAIN,{hostname},nodectl-auth"));
         let body = serde_json::to_vec(&json!({"release":id,"clients":profiles,
+            "browser_login":portal,"browser_login_route":route,
             "subscriptions":{"xray":format!("/nodes/sub/xray?token={token}"),"mihomo":format!("/nodes/sub/mihomo?token={token}"),"mihomo-weighted":format!("/nodes/sub/mihomo-weighted?token={token}")}}))?;
         response(stream, 200, "application/json; charset=utf-8", &body)
     } else {

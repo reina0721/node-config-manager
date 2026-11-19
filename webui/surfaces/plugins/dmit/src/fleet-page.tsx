@@ -19,8 +19,10 @@ export default function FleetPage() {
   const [name, setName] = useState('');
   const [hostname, setHostname] = useState('');
   const [address, setAddress] = useState('');
-  const [port, setPort] = useState('9443');
-  const validPort = /^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535;
+  const [port, setPort] = useState('443');
+  const validPort =
+    /^\d{1,5}$/.test(port) &&
+    (Number(port) === 443 || (Number(port) >= 1024 && Number(port) <= 65535));
   const [token, setToken] = useState('');
   const [grantName, setGrantName] = useState('');
   const [scope, setScope] = useState<PeerGrant['scope']>('read');

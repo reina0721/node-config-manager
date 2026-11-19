@@ -16,7 +16,7 @@ test('Rust 强制保护、高级差异检查应用、备份恢复与回滚保持
   const send = async (path: string, data?: unknown) =>
     page.evaluate(
       async ({ path, data, csrf }) => {
-        const r = await fetch('/admin/api/' + path, {
+        const r = await fetch('/nc/api/' + path, {
           method: data === undefined ? 'GET' : 'POST',
           credentials: 'same-origin',
           headers:

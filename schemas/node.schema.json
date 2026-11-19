@@ -14,6 +14,16 @@
     "website"
   ],
   "properties": {
+    "auth_portal": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AuthPortal"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "clients": {
       "$ref": "#/definitions/Clients"
     },
@@ -61,6 +71,9 @@
       "format": "uint32",
       "minimum": 0.0
     },
+    "shared_console": {
+      "type": "boolean"
+    },
     "tls": {
       "$ref": "#/definitions/Tls"
     },
@@ -96,6 +109,22 @@
   },
   "additionalProperties": false,
   "definitions": {
+    "AuthPortal": {
+      "type": "object",
+      "required": [
+        "prefix",
+        "root_domain"
+      ],
+      "properties": {
+        "prefix": {
+          "type": "string"
+        },
+        "root_domain": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Catalogue": {
       "type": "object",
       "properties": {

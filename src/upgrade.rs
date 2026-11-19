@@ -20,6 +20,7 @@ const ACCESS_MINIMUM: [u64; 3] = [0, 7, 1];
 const MANAGEMENT_MINIMUM: [u64; 3] = [0, 8, 0];
 const TRANSPORT_MINIMUM: [u64; 3] = [0, 8, 2];
 const TRAFFIC_CYCLE_MINIMUM: [u64; 3] = [0, 10, 0];
+const SHARED_CONSOLE_MINIMUM: [u64; 3] = [0, 11, 0];
 
 #[derive(Serialize, Deserialize)]
 struct Switch {
@@ -111,10 +112,16 @@ fn snapshot_minimum(store: &Store) -> Result<[u64; 3]> {
     } else {
         WEB_MINIMUM
     };
+    if proxy_access::has_client_definitions(store)? {
+        minimum = minimum.max(SHARED_CONSOLE_MINIMUM);
+    }
     for pointer in ["current", "previous"] {
         if let Some(id) = store.pointer(pointer)? {
             let (config, _, manifest) = store.verify_with_manifest(&id)?;
             let generator = stable_version(&manifest.generator_version)?;
+            if config.shared_console || config.auth_portal.is_some() {
+                minimum = minimum.max(SHARED_CONSOLE_MINIMUM);
+            }
             if generator >= TRANSPORT_MINIMUM {
                 minimum = minimum.max(generator);
             } else if config.management.is_some() {

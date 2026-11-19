@@ -12,6 +12,7 @@ function clear() {
   element('nodes').replaceChildren();
   element('formats').replaceChildren();
   element('release').textContent = '';
+  element('portal').textContent = '';
 }
 async function authorizedFetch(path) {
   const current = generation;
@@ -31,11 +32,14 @@ element('open').addEventListener('click', async () => {
     const data = await (await authorizedFetch('/nodes/api')).json();
     if (current !== generation) return;
     element('release').textContent = data.release;
+    const portal = element('portal');
+    portal.textContent = data.browser_login ? `认证地址：${data.browser_login}。启用 nodectl 设备代理后打开。` : '';
+    if (data.browser_login_route) portal.textContent += ` 路由：${data.browser_login_route}。建议直接导入完整按比例配置。`;
     element('nodes').replaceChildren();
     for (const profile of data.clients.profiles) {
       const item = document.createElement('li');
-      const server = profile.outbound.settings.vnext[0];
-      item.textContent = `${profile.name} · ${server.address}:${server.port} · 权重 ${profile.weight.numerator}/${profile.weight.denominator}`;
+      const server = profile.outbound.settings.vnext?.[0] ?? profile.outbound.settings;
+      item.textContent = `${profile.name} · ${server.address}:${server.port}${profile.weight ? ` · 权重 ${profile.weight.numerator}/${profile.weight.denominator}` : ''}`;
       element('nodes').append(item);
     }
     element('formats').replaceChildren();

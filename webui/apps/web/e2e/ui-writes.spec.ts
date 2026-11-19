@@ -21,7 +21,7 @@ test('普通入站在手机端通过检查后可确认应用', async ({ page }) 
   await page.getByLabel('端口', { exact: true }).fill('5578');
 
   const preview = page.waitForResponse(
-    (r) => r.url().endsWith('/admin/api/catalogue/preview') && r.request().method() === 'POST',
+    (r) => r.url().endsWith('/nc/api/catalogue/preview') && r.request().method() === 'POST',
   );
   await page.getByRole('button', { name: '预览变更', exact: true }).click();
   const plan = planViewSchema.parse(await (await preview).json());
@@ -45,7 +45,7 @@ test('普通入站在手机端通过检查后可确认应用', async ({ page }) 
   await expect(row).toHaveCount(0);
   await apply.click();
   const application = page.waitForResponse(
-    (r) => r.url().endsWith('/admin/api/config/apply') && r.request().method() === 'POST',
+    (r) => r.url().endsWith('/nc/api/config/apply') && r.request().method() === 'POST',
   );
   await dialog.getByRole('button', { name: '确认执行', exact: true }).click();
   expect((await application).request().postDataJSON()).toEqual({
@@ -82,7 +82,7 @@ test('界面高级修改与快照恢复经过真实检查、两次确认和运�
   changed.clients.ws_weight += 1;
   await editor.fill(JSON.stringify(changed, null, 2));
   const preview = page.waitForResponse(
-    (r) => r.url().endsWith('/admin/api/config/preview') && r.request().method() === 'POST',
+    (r) => r.url().endsWith('/nc/api/config/preview') && r.request().method() === 'POST',
   );
   await page.getByRole('button', { name: '预览变更', exact: true }).click();
   const plan = planViewSchema.parse(await (await preview).json());
@@ -96,7 +96,7 @@ test('界面高级修改与快照恢复经过真实检查、两次确认和运�
   await checkAndApply(page, plan);
   const actual = configurationViewSchema.parse(
     await page.evaluate(async () => {
-      const r = await fetch('/admin/api/config');
+      const r = await fetch('/nc/api/config');
       return (await r.json()) as unknown;
     }),
   );
@@ -112,7 +112,7 @@ test('界面高级修改与快照恢复经过真实检查、两次确认和运�
   const dialog = page.getByRole('alertdialog');
   await dialog.getByLabel('管理员 Token', { exact: true }).fill(administratorToken());
   const restoreResponse = page.waitForResponse((r) =>
-    r.url().endsWith('/admin/api/backups/preview'),
+    r.url().endsWith('/nc/api/backups/preview'),
   );
   await dialog.getByRole('button', { name: '预览变更', exact: true }).click();
   const restore = planViewSchema.parse(await (await restoreResponse).json());
@@ -121,7 +121,7 @@ test('界面高级修改与快照恢复经过真实检查、两次确认和运�
   expect(
     configurationViewSchema.parse(
       await page.evaluate(async () => {
-        const r = await fetch('/admin/api/config');
+        const r = await fetch('/nc/api/config');
         return (await r.json()) as unknown;
       }),
     ).config,

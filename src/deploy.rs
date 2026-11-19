@@ -27,6 +27,12 @@ pub struct Deploy {
     /// Root domain for new DMIT names (for example example.com).
     #[arg(long)]
     pub domain_suffix: Option<String>,
+    /// Private authentication subdomain label; new deployments default to auth.
+    #[arg(long)]
+    pub auth_prefix: Option<String>,
+    /// Mount the node console at /nc/ on the primary HTTPS site.
+    #[arg(long, action=clap::ArgAction::Set)]
+    pub shared_console: Option<bool>,
     #[arg(long, default_value = "")]
     pub subdomain_prefix: String,
     #[arg(long)]
@@ -255,6 +261,11 @@ pub(crate) fn candidate(store: &Store, args: &Deploy) -> Result<(Config, Secrets
             c.node.domain = format!("{prefix}speedtest.{suffix}");
             c.node.reality_domain = format!("{prefix}files.{suffix}");
             c.node.aliases = vec![];
+            c.auth_portal = Some(config::AuthPortal {
+                root_domain: suffix,
+                prefix: args.auth_prefix.as_deref().unwrap_or("auth").to_owned(),
+            });
+            c.shared_console = true;
         }
         c.node.ipv4 = if args.ipv4.is_some() {
             String::new()
@@ -292,6 +303,24 @@ pub(crate) fn candidate(store: &Store, args: &Deploy) -> Result<(Config, Secrets
     set!(c.node.domain, args.domain);
     set!(c.node.reality_domain, args.reality_domain);
     set!(c.node.aliases, args.aliases);
+    set!(c.shared_console, args.shared_console);
+    if let Some(prefix) = &args.auth_prefix {
+        let root_domain = args
+            .domain_suffix
+            .clone()
+            .or_else(|| {
+                c.auth_portal
+                    .as_ref()
+                    .map(|portal| portal.root_domain.clone())
+            })
+            .context(
+                "Specify --domain-suffix when introducing a private authentication hostname",
+            )?;
+        c.auth_portal = Some(config::AuthPortal {
+            root_domain,
+            prefix: prefix.clone(),
+        });
+    }
     if args.replace_domain_set && args.aliases.is_none() {
         c.node.aliases.clear();
     }

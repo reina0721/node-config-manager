@@ -15,12 +15,113 @@ use tokio::{
 fn device() -> Device {
     Device {
         username: "alice".into(),
+        client: None,
         label: "laptop".into(),
         transit: Uuid::new_v4(),
         portal: Uuid::new_v4(),
         authenticated: None,
         attempts: vec![],
     }
+}
+
+#[test]
+fn shared_client_assignments_revoke_only_the_removed_users_device() -> Result<()> {
+    let config: crate::config::Config = toml::from_str(crate::config::EXAMPLE)?;
+    let mut db = Database {
+        enabled: true,
+        ..Default::default()
+    };
+    db.add_users(vec![
+        ("alice", "test-password", 2),
+        ("bob", "another-password", 1),
+    ])?;
+    let mut profile = clients::Client {
+        name: "shared".into(),
+        inbounds: BTreeSet::new(),
+        usernames: BTreeSet::from(["alice".into(), "bob".into()]),
+        links: vec![],
+    };
+    db.save_client(&config, None, profile.clone())?;
+    let id = *db.clients.keys().next().unwrap();
+    let legacy = Uuid::new_v4();
+    db.devices.insert(legacy, device());
+    let alice = Uuid::new_v4();
+    let bob = Uuid::new_v4();
+    db.devices.insert(
+        alice,
+        Device {
+            client: Some(id),
+            ..device()
+        },
+    );
+    db.devices.insert(
+        bob,
+        Device {
+            client: Some(id),
+            username: "bob".into(),
+            ..device()
+        },
+    );
+    profile.usernames.remove("alice");
+    db.save_client(&config, Some(id), profile)?;
+    assert!(!db.devices.contains_key(&alice));
+    assert!(db.devices.contains_key(&bob));
+    assert!(db.devices.contains_key(&legacy));
+    assert_ne!(db.devices[&legacy].transit, db.devices[&bob].transit);
+    Ok(())
+}
+
+#[test]
+fn shared_client_attachments_are_intersected_with_account_groups() -> Result<()> {
+    let (_tmp, store) = crate::tests::sandbox();
+    let (mut config, secrets) = store.inputs()?;
+    let mut management = crate::catalogue::Catalogue::default();
+    let inbound = |remark: &str, port| {
+        serde_json::from_value(json!({
+            "remark":remark, "protocol":"vless", "transport":"raw", "security":"tls",
+            "listener":"dedicated", "port":port, "path":"", "enabled":true
+        }))
+    };
+    let selected = Uuid::new_v4();
+    let other = Uuid::new_v4();
+    let group = Uuid::new_v4();
+    management
+        .inbounds
+        .insert(selected, inbound("selected", 25880)?);
+    management.inbounds.insert(other, inbound("other", 25881)?);
+    management.groups.insert(
+        group,
+        crate::catalogue::Group {
+            name: "granted".into(),
+            description: String::new(),
+            enabled: true,
+            inbounds: BTreeSet::from([selected, other]),
+            hosts: BTreeSet::new(),
+        },
+    );
+    config.management = Some(management);
+    let definition = clients::Client {
+        name: "shared".into(),
+        inbounds: BTreeSet::from([selected]),
+        usernames: BTreeSet::new(),
+        links: vec![],
+    };
+    let config = definition.restrict(&config);
+    for groups in [BTreeSet::from([group]), BTreeSet::new()] {
+        let model: Value = serde_json::from_slice(&crate::render::device_profiles_with_links(
+            &config,
+            &secrets,
+            Uuid::new_v4(),
+            &groups,
+            "mihomo",
+            "https://auth.private-example.invalid",
+            Some(&[]),
+        )?)?;
+        let proxies = model["proxies"].as_array().unwrap();
+        assert_eq!(proxies.len(), if groups.is_empty() { 6 } else { 7 });
+        assert!(!proxies.iter().any(|entry| entry["port"] == 25881));
+    }
+    Ok(())
 }
 
 #[test]

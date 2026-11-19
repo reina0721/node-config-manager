@@ -31,6 +31,6 @@ chmod 0600 /root/nodectl-test/admin-token
 sha256sum --check /root/nodectl-test/admin-baseline.sha256 >/dev/null
 systemctl show nginx xray -p MainPID > /root/nodectl-test/admin-node-pids.after
 cmp /root/nodectl-test/admin-node-pids.before /root/nodectl-test/admin-node-pids.after
-curl --noproxy '*' --fail --silent --show-error --cacert /usr/local/share/ca-certificates/nodectl-test.crt --resolve "node.localhost:$port:127.0.0.1" "https://node.localhost:$port/admin/" > /root/nodectl-test/admin-root.html
+curl --noproxy '*' --fail --silent --show-error --cacert /usr/local/share/ca-certificates/nodectl-test.crt --resolve "node.localhost:$port:127.0.0.1" "https://node.localhost:$port/nc/" > /root/nodectl-test/admin-root.html
 systemctl is-active --quiet nginx xray nodectl-share nodectl-admin nodectl-admin-nginx
 printf '%s\n' ADMIN_HTTPS_AND_ORIGINAL_NODE_BYTES_AND_PIDS_PRESERVED_PASS

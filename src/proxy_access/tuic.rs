@@ -145,10 +145,11 @@ pub(super) fn render(
         }
         rules.push(health_rule);
         for (device_id, device) in &db.devices {
-            if !db
-                .users
-                .get(&device.username)
-                .is_some_and(|account| catalogue.granted(&account.groups, id))
+            if !db.client_allows(device, id)
+                || !db
+                    .users
+                    .get(&device.username)
+                    .is_some_and(|account| catalogue.granted(&account.groups, id))
             {
                 continue;
             }

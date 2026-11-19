@@ -18,7 +18,7 @@ test('慢请求、重试、快速连续导航、键盘焦点及减少动态效�
     release = resolve;
   });
   await page.route(
-    '**/admin/api/nodes',
+    '**/nc/api/nodes',
     async (route) => {
       await delayed;
       await route.fulfill({ status: 502, contentType: 'application/json', body: '{}' });
@@ -41,7 +41,7 @@ test('慢请求、重试、快速连续导航、键盘焦点及减少动态效�
     releaseHosts = resolve;
   });
   await page.route(
-    '**/admin/api/config',
+    '**/nc/api/config',
     async (route) => {
       await slowHosts;
       await route.continue();
@@ -111,7 +111,7 @@ test('服务任务跨页可见，运维页提供版本管理和任务详情', as
     release = resolve;
   });
   await page.route(
-    '**/admin/api/jobs/*',
+    '**/nc/api/jobs/*',
     async (route) => {
       await delayed;
       await route.continue();

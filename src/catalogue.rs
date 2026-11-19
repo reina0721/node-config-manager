@@ -728,6 +728,7 @@ fn reserved_paths(c: &Config) -> impl Iterator<Item = &str> {
         "/.well-known/",
     ]
     .into_iter()
+    .chain(c.shared_console.then_some("/nc/"))
     .chain(c.website.reserved_paths.iter().map(String::as_str))
 }
 

@@ -73,7 +73,7 @@ async function measureRoute(htmlFile) {
           resolve(
             outputRoot,
             decodeURIComponent(source.split('?')[0])
-              .replace(/^\/admin(?=\/)/, '')
+              .replace(/^\/(?:nc|admin)(?=\/)/, '')
               .replace(/^\/+/, ''),
           ),
         ),

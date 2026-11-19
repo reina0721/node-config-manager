@@ -1,4 +1,5 @@
-//! Dedicated HTTPS listener; never edits node templates, current or node inputs.
+//! Signed static console deployment on the managed HTTPS site or a legacy listener.
+mod shared;
 use crate::{
     admin_auth, config, host,
     store::{self, Store},
@@ -127,8 +128,13 @@ pub(crate) fn renew_if_installed(c: &config::Config) -> Result<()> {
 pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
     let (c, _) = s.inputs()?;
     ensure!(
-        ![c.ports.http, c.ports.https, c.ports.reality, 9080].contains(&port)
-            && (!crate::proxy_access::enabled(s)? || !crate::proxy_access::reserved_port(port)),
+        if c.shared_console {
+            port == 443
+        } else {
+            port >= 1024
+                && ![c.ports.http, c.ports.https, c.ports.reality, 9080].contains(&port)
+                && (!crate::proxy_access::enabled(s)? || !crate::proxy_access::reserved_port(port))
+        },
         "Admin HTTPS port collides with node or API listeners"
     );
     for path in [
@@ -147,7 +153,21 @@ pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
         "Build the static frontend first"
     );
     let digest = store::digest(&serde_json::to_vec(&files)?);
-    let origin = format!("https://{}:{port}", c.node.domain);
+    let index = fs::read_to_string(assets.join("index.html"))?;
+    let prefix = if index.contains("/nc/_next/") {
+        "nc"
+    } else {
+        "admin"
+    };
+    ensure!(
+        !c.shared_console || prefix == "nc",
+        "The shared console requires /nc/ assets"
+    );
+    let origin = if c.shared_console {
+        format!("https://{}", c.node.domain)
+    } else {
+        format!("https://{}:{port}", c.node.domain)
+    };
     let binary = std::env::current_exe()?;
     let api = format!(
         "{MARKER}\n[Unit]\nDescription=DMIT single administrator API\nAfter=network-online.target\n[Service]\nType=simple\nExecStart={} --config-dir {} --state-dir {} admin serve --origin {}\nRestart=on-failure\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=false\n[Install]\nWantedBy=multi-user.target\n",
@@ -176,7 +196,26 @@ pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
         "default-src 'self'; script-src 'self' {}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
         hashes.into_iter().collect::<Vec<_>>().join(" ")
     );
-    let nginx = nginx(&c, port, &csp);
+    if c.shared_console {
+        println!("Admin HTTPS: {origin}/nc/\nStatic release: {digest}");
+        if !execute {
+            return Ok(());
+        }
+        let _guard = s.lock()?;
+        host::linux_root()?;
+        host::certificates(&c)?;
+        publish_assets(assets, &files, &digest, prefix)?;
+        if let Some(token) = admin_auth::reset(s, false)? {
+            println!("Administrator token (save securely; shown once):\n{token}");
+        }
+        return shared::activate(s, &c, &digest, &api, &csp);
+    }
+    let mut nginx = nginx(&c, port, &csp);
+    if prefix == "nc" {
+        nginx = nginx
+            .replace("return 302 /admin/;", "return 302 /nc/;")
+            .replace("return 308 /admin/;", "return 308 /nc/;");
+    }
     let proxy = format!(
         "{MARKER}\n[Unit]\nDescription=DMIT admin dedicated Nginx HTTPS\nAfter=network-online.target nodectl-admin.service\nWants=nodectl-admin.service\n[Service]\nType=forking\nPIDFile=/run/nodectl-admin-nginx.pid\nExecStartPre={} -t -c {CONFIG}/nginx.conf\nExecStart={} -c {CONFIG}/nginx.conf\nExecReload={} -s reload -c {CONFIG}/nginx.conf\nExecStop={} -s quit -c {CONFIG}/nginx.conf\nRestart=on-failure\n[Install]\nWantedBy=multi-user.target\n",
         c.runtime.nginx_binary,
@@ -205,7 +244,7 @@ pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
         }
     }
     println!(
-        "Admin HTTPS: {origin}/admin/\nStatic release: {digest}\nNode configuration, original Nginx instance and port 443 remain untouched."
+        "Admin HTTPS: {origin}/{prefix}/\nStatic release: {digest}\nNode configuration, original Nginx instance and port 443 remain untouched."
     );
     if !execute {
         println!("Preview only; add --execute to install these dedicated services.");
@@ -219,26 +258,7 @@ pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
     if Path::new(&format!("{ROOT}/current")).exists() {
         ensure!(previous.is_some(), "Refusing unmanaged static root");
     }
-    let destination = PathBuf::from(ROOT)
-        .join("releases")
-        .join(&digest)
-        .join("admin");
-    public_dir(&destination)?;
-    for (name, hash) in &files {
-        let bytes = fs::read(assets.join(name))?;
-        ensure!(
-            store::digest(&bytes) == *hash,
-            "Static input changed during install"
-        );
-        let target = destination.join(name);
-        public_dir(target.parent().unwrap())?;
-        store::atomic_write(&target, &bytes)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&target, fs::Permissions::from_mode(0o644))?;
-        }
-    }
+    publish_assets(assets, &files, &digest, prefix)?;
     store::private_dir(Path::new(CONFIG))?;
     let old_states = [
         ("nodectl-admin", host::service_state("nodectl-admin")?),
@@ -321,6 +341,40 @@ pub fn run(s: &Store, assets: &Path, port: u16, execute: bool) -> Result<()> {
         result?;
     }
     Ok(())
+}
+
+fn publish_assets(
+    source: &Path,
+    files: &BTreeMap<String, String>,
+    digest: &str,
+    prefix: &str,
+) -> Result<()> {
+    let destination = PathBuf::from(ROOT)
+        .join("releases")
+        .join(digest)
+        .join(prefix);
+    public_dir(&destination)?;
+    for (name, hash) in files {
+        let bytes = fs::read(source.join(name))?;
+        ensure!(
+            store::digest(&bytes) == *hash,
+            "Static input changed during install"
+        );
+        let target = destination.join(name);
+        public_dir(target.parent().unwrap())?;
+        store::atomic_write(&target, &bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o644))?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn recover_shared(s: &Store) -> Result<()> {
+    let _guard = s.lock()?;
+    shared::recover(s, &s.inputs()?.0)
 }
 fn verify_api_ready() -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -470,6 +524,23 @@ http {{
             proxy_cache off;
             proxy_buffering off;
         }}
+        location = /nc {{ return 308 /nc/; }}
+        location = /nc/api/login {{
+            error_log /dev/null;
+            limit_req zone=admin_login burst=3 nodelay;
+            limit_req_status 429;
+            proxy_pass http://127.0.0.1:9080;
+        }}
+        location ^~ /nc/api/ {{
+            error_log /dev/null;
+            limit_req zone=admin_requests burst=20 nodelay;
+            limit_req_status 429;
+            proxy_pass http://127.0.0.1:9080;
+            proxy_read_timeout 180s;
+            proxy_cache off;
+            proxy_buffering off;
+        }}
+        location ^~ /nc/ {{ try_files $uri $uri/index.html =404; }}
         location /admin/ {{ try_files $uri $uri/index.html =404; }}
         location / {{ return 404; }}
     }}

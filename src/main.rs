@@ -156,6 +156,22 @@ enum Action {
     },
     /// Revalidate certificates and reload Nginx after certificate renewal.
     RenewHook,
+    /// Issue a private authentication certificate with DNS-01.
+    IssueAuthCertificate {
+        #[arg(long)]
+        hostname: String,
+        #[arg(long)]
+        token_file: PathBuf,
+        #[arg(long)]
+        zone: Option<String>,
+    },
+    /// Validate and publish a private authentication certificate from protected files.
+    ActivateAuthCertificate {
+        #[arg(long)]
+        hostname: String,
+        #[arg(long)]
+        source: PathBuf,
+    },
     /// Print JSON Schema for node.toml (represented as a JSON object).
     Schema,
 }
@@ -193,6 +209,14 @@ fn run() -> Result<()> {
         Action::CnRoute(command) => cn_route::run(command)?,
         Action::Doctor { json } => diagnostics::doctor(&store, json)?,
         Action::Status { json } => diagnostics::status(&store, json)?,
+        Action::IssueAuthCertificate {
+            hostname,
+            token_file,
+            zone,
+        } => proxy_access::certificate::issue(&store, &hostname, &token_file, zone.as_deref())?,
+        Action::ActivateAuthCertificate { hostname, source } => {
+            proxy_access::certificate::activate(&hostname, &source)?
+        }
         Action::Setup(setup) => setup::run(&store, setup)?,
         Action::Deploy(deploy) => deploy::run(&store, deploy)?,
         Action::Share { action } => share::run(&store, action)?,

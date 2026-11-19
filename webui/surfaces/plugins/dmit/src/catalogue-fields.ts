@@ -242,6 +242,7 @@ export function inboundErrors(
       '/librespeed/',
       '/downloads/',
       '/admin/',
+      ...(config.shared_console ? ['/nc/'] : []),
       '/.well-known/',
       ...others
         .filter(

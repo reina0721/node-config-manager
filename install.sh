@@ -49,7 +49,7 @@ fi
 printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || die 'Specify an exact stable version: --version vX.Y.Z'
 if [ "$MODE" = switch-admin ]; then
   [ "$EXECUTE" = yes ] && [ "$(id -u)" = 0 ] || die "Console switching requires root and --execute"
-  printf '%s\n' "$ADMIN_PORT" | awk '/^[0-9]+$/ && $0>=1024 && $0<=65535 {ok=1} END {exit !ok}' || die "Invalid console port"
+  printf '%s\n' "$ADMIN_PORT" | awk '/^[0-9]+$/ && ($0==443 || ($0>=1024 && $0<=65535)) {ok=1} END {exit !ok}' || die "Invalid console port"
 fi
 if [ "$WITH_ADMIN" = yes ]; then
   printf '%s\n' "$VERSION" | awk -F '[v.]' '{exit !(($2+0)>0 || ($3+0)>=6)}' || die 'Static admin requires v0.6.0 or newer'
@@ -74,6 +74,7 @@ printf 'Version: %s\nArchitecture: %s\nAsset: %s\nInstall: %s/bin/nodectl\nTrust
 for tool in curl sha256sum tar mktemp install flock sync od tr; do command -v "$tool" >/dev/null 2>&1 || die "Missing $tool; see docs/installation.md"; done
 [ ! -e "$STATE_DIR/deployment.json" ] && [ ! -e "$STATE_DIR/transaction.json" ] && [ ! -e "$STATE_DIR/uninstall.json" ] || die 'Recover the interrupted lifecycle transaction before installing/upgrading'
 [ ! -e "$STATE_DIR/admin-input.json" ] || die 'Recover the interrupted admin configuration transaction before installing/upgrading'
+[ ! -e "$STATE_DIR/admin/shared-console.json" ] || die 'Recover the interrupted shared console installation before upgrading'
 check_dir() {
   [ ! -L "$1" ] || die 'Refusing symbolic-link destination'
   if [ -e "$1" ]; then
@@ -111,7 +112,10 @@ cleanup() {
     if restore_binary; then
       recovered=yes
       restart_managed_backends || recovered=no
-      systemctl restart nodectl-admin nodectl-admin-nginx || recovered=no
+      systemctl restart nodectl-admin || recovered=no
+      if systemctl is-enabled --quiet nodectl-admin-nginx; then
+        systemctl restart nodectl-admin-nginx || recovered=no
+      fi
     fi
     if [ "$recovered" = yes ]; then
       printf '%s\n' 'Console activation failed; previous executable and services restored.' >&2

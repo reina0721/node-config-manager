@@ -4,7 +4,12 @@ import { Section } from '@community-go/surface-foundation/layout';
 import { Action } from '@community-go/ui-adapter/action';
 import { DataTable } from '@community-go/ui-adapter/data-display';
 import { AlertBanner, Badge } from '@community-go/ui-adapter/feedback';
-import { PasswordField, SwitchField, TextField } from '@community-go/ui-adapter/form-field';
+import {
+  PasswordField,
+  SelectField,
+  SwitchField,
+  TextField,
+} from '@community-go/ui-adapter/form-field';
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import {
   useNodeManagement,
@@ -257,6 +262,9 @@ export default function ProxyAccessPanel({
                 void perform(() => api.downloadProxyProfile(id, format), false);
               }}
               subscriptions={data.enabled && subscriptions}
+              clients={data.clients.filter(
+                (client) => user && client.usernames.includes(user.username),
+              )}
               extraFormats={data.extra_profile_formats ?? []}
               queue={(entry) =>
                 setBulk((items) => [
@@ -354,6 +362,7 @@ function UserEditor({
   onDeviceDelete,
   download,
   subscriptions,
+  clients,
   extraFormats,
   queue,
   queueFull,
@@ -368,6 +377,7 @@ function UserEditor({
   onDeviceDelete: (id: string) => void;
   download: (id: string, format: DeviceExportFormat) => void;
   subscriptions: boolean;
+  clients: ProxyAccess['clients'];
   extraFormats: NonNullable<ProxyAccess['extra_profile_formats']>;
   queue: (entry: NewUser) => void;
   queueFull: boolean;
@@ -398,6 +408,7 @@ function UserEditor({
   const [password, setPassword] = useState('');
   const [limit, setLimit] = useState<string>();
   const [device, setDevice] = useState('');
+  const [client, setClient] = useState('legacy');
   const count = Number(limit ?? user?.device_limit ?? 1);
   const valid = Number.isInteger(count) && count >= 1 && count <= 32;
   const usernameValid = Boolean(user) || /^[a-zA-Z0-9._@-]{1,64}$/.test(username.trim());
@@ -494,6 +505,20 @@ function UserEditor({
       </div>
       {user ? (
         <>
+          {clients.length > 0 && (
+            <SelectField
+              label={t('sharedClients.definition')}
+              value={clients.some((record) => record.id === client) ? client : 'legacy'}
+              options={[
+                { value: 'legacy', label: t('sharedClients.legacy') },
+                ...clients.map((record) => ({ value: record.id, label: record.name })),
+              ]}
+              onValueChange={(value) => {
+                setClient(value);
+                onDeviceDirty(true);
+              }}
+            />
+          )}
           <TextField
             label={t('access.deviceName')}
             hint={t('access.deviceHint')}
@@ -512,6 +537,7 @@ function UserEditor({
                   action: 'create-device',
                   username: user.username,
                   label: device.trim(),
+                  ...(clients.some((record) => record.id === client) ? { client } : {}),
                 }).then((ok) => {
                   if (ok) {
                     setDevice('');

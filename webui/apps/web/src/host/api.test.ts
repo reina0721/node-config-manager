@@ -19,7 +19,7 @@ describe('Rust API browser adapter', () => {
     const api = createAdminApi(vi.fn(), vi.fn());
     await api.login('administrator-secret');
     await api.port.credentials('a'.repeat(32), 'cloudflare-secret');
-    expect(fetch.mock.calls[0]?.[0]).toBe('/admin/api/login');
+    expect(fetch.mock.calls[0]?.[0]).toBe('/nc/api/login');
     expect(fetch.mock.calls[0]?.[1]).toMatchObject({
       method: 'POST',
       credentials: 'same-origin',

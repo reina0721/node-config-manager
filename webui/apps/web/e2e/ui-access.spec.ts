@@ -57,7 +57,7 @@ test('浏览器认证只在面板设置编辑，设备配置只在客户端下�
   } finally {
     await page.evaluate(
       async ({ username, originalTtl }) => {
-        const session = await fetch('/admin/api/session');
+        const session = await fetch('/nc/api/session');
         if (!session.ok) return;
         const value: unknown = await session.json();
         if (
@@ -69,7 +69,7 @@ test('浏览器认证只在面板设置编辑，设备配置只在客户端下�
           return;
         const csrf = value.csrf;
         const update = (body: object) =>
-          fetch('/admin/api/proxy-access', {
+          fetch('/nc/api/proxy-access', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
             body: JSON.stringify(body),

@@ -16,10 +16,10 @@ use std::{
     path::Path,
 };
 
-const PORT: u16 = 19443;
+const LEGACY_PORT: u16 = 19443;
 
 pub fn reserved_port(port: u16) -> bool {
-    [PORT, GATE.port()].contains(&port)
+    [LEGACY_PORT, GATE.port()].contains(&port)
 }
 pub(super) const GATE: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 19081);
@@ -111,7 +111,10 @@ impl RelayIdentity {
 }
 
 pub(super) fn portal(config: &Config) -> String {
-    format!("https://{}:{PORT}", config.node.domain)
+    match config.auth_domain() {
+        Some(host) => format!("https://{host}"),
+        None => format!("https://{}:{LEGACY_PORT}", config.node.domain),
+    }
 }
 
 fn installed_source(store: &Store) -> Result<(String, std::path::PathBuf)> {
@@ -163,6 +166,7 @@ pub(super) fn validate(store: &Store, binary: &Path) -> Result<()> {
         );
     }
     check_ports(&running)?;
+    super::certificate::verify(&running)?;
     for path in [DROP_IN, SERVICE] {
         if Path::new(path).symlink_metadata().is_ok() {
             store::check_private(Path::new(path), false)?;
@@ -251,6 +255,7 @@ pub(super) fn restart(store: &Store) -> Result<()> {
 }
 
 pub fn prepare(store: &Store) -> Result<()> {
+    super::certificate::verify(&installed(store)?)?;
     let (id, source) = installed_source(store)?;
     let (config, secrets) = store.verify(&id)?;
     check_ports(&config)?;
@@ -570,18 +575,20 @@ pub(super) fn ingress_id(device: uuid::Uuid, tag: &str) -> uuid::Uuid {
 
 pub(super) struct Ingress {
     pub tag: String,
+    pub managed: Option<uuid::Uuid>,
     pub expires: Option<u64>,
     pub groups: Option<BTreeSet<uuid::Uuid>>,
 }
 
 pub(super) fn ingress(config: &Config) -> Vec<Ingress> {
-    if !crate::egress::needs_ingress(config) {
+    if !per_ingress(config) {
         return Vec::new();
     }
     PUBLIC_TAGS
         .into_iter()
         .map(|tag| Ingress {
             tag: tag.to_owned(),
+            managed: None,
             expires: None,
             groups: None,
         })
@@ -597,11 +604,16 @@ pub(super) fn ingress(config: &Config) -> Vec<Ingress> {
                 .collect();
             Ingress {
                 tag,
+                managed: Some(id),
                 expires,
                 groups: Some(groups),
             }
         }))
         .collect()
+}
+
+fn per_ingress(config: &Config) -> bool {
+    crate::egress::needs_ingress(config) || !managed_tags(config).is_empty()
 }
 
 pub(super) fn backend_for(path: &Path, ingress: &str) -> std::path::PathBuf {
@@ -634,7 +646,7 @@ pub(super) fn overlay(
         })
         .collect();
     let managed = managed_tags(config);
-    let ingress_routing = crate::egress::needs_ingress(config);
+    let ingress_routing = per_ingress(config);
     use crate::catalogue::{HEALTH_ALIAS, device_alias, host_probe_alias};
     let hosts = config
         .management
@@ -691,13 +703,14 @@ pub(super) fn overlay(
                 .iter()
                 .filter(|(_, device)| {
                     managed_id.is_none_or(|managed_id| {
-                        database.users.get(&device.username).is_some_and(|account| {
-                            config
-                                .management
-                                .as_ref()
-                                .unwrap()
-                                .granted(&account.groups, *managed_id)
-                        })
+                        database.client_allows(device, *managed_id)
+                            && database.users.get(&device.username).is_some_and(|account| {
+                                config
+                                    .management
+                                    .as_ref()
+                                    .unwrap()
+                                    .granted(&account.groups, *managed_id)
+                            })
                     })
                 })
                 .map(|(id, _)| (*id, device_alias(*id))),
@@ -762,18 +775,23 @@ pub(super) fn overlay(
             "type":"field","inboundTag":amnezia_tags,"ip":["10.0.0.0/8","fd00::/8"],"outboundTag":"block"
         }));
     }
-    let mut destination_ip = vec![config.node.ipv4.as_str()];
-    if !config.node.ipv6.is_empty() {
-        destination_ip.push(&config.node.ipv6);
-    }
+    let auth_domain = config.auth_domain();
+    let portal_host = auth_domain.as_deref().unwrap_or(&config.node.domain);
+    let portal_port = if auth_domain.is_some() {
+        443
+    } else {
+        LEGACY_PORT
+    };
     for (id, device) in &database.devices {
         let user = device_alias(*id);
         let portal = format!("portal-{user}");
         let transit = format!("transit-{user}");
-        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":PORT.to_string(),
-            "domain":[format!("full:{}",config.node.domain)],"outboundTag":portal}));
-        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":PORT.to_string(),
-            "ip":destination_ip,"outboundTag":portal}));
+        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":portal_port.to_string(),
+            "domain":[format!("full:{portal_host}")],"outboundTag":portal}));
+        if auth_domain.is_none() {
+            rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":LEGACY_PORT.to_string(),
+                "ip":config.ips(),"outboundTag":portal}));
+        }
         let mut relays = vec![(portal.clone(), device.portal)];
         if ingress_routing {
             for tag in &tags {

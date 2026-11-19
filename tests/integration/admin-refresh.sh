@@ -18,5 +18,5 @@ if [ -r "/proc/$old_pid/comm" ] && [ "$(cat "/proc/$old_pid/comm")" = dnsmasq ];
 dnsmasq --keep-in-foreground --conf-file=/root/nodectl-test/admin-dns.conf > /root/nodectl-test/admin-dns.log 2>&1 &
 printf '%s\n' "$!" > /root/nodectl-test/admin-dns.pid
 nodectl admin install --assets /opt/nodectl-admin-test-ui --port 10443 --execute > /root/nodectl-test/admin-reinstall.log
-curl --noproxy '*' --fail --silent --show-error --cacert /usr/local/share/ca-certificates/nodectl-test.crt --resolve node.localhost:10443:127.0.0.1 https://node.localhost:10443/admin/ >/dev/null
+curl --noproxy '*' --fail --silent --show-error --cacert /usr/local/share/ca-certificates/nodectl-test.crt --resolve node.localhost:10443:127.0.0.1 https://node.localhost:10443/nc/ >/dev/null
 printf '%s\n' ADMIN_LOCALHOST_TLS_SAN_AND_NODE_APPLY_PASS

@@ -28,7 +28,7 @@ export function administratorToken() {
   return token;
 }
 export async function login(page: Page) {
-  await page.goto('/admin/dmit/');
+  await page.goto('/nc/dmit/');
   await page.getByLabel('管理员 Token', { exact: true }).fill(administratorToken());
   await page.getByRole('button', { name: '登录管理后台', exact: true }).click();
   await expect(page.getByRole('heading', { name: '节点运行总览', exact: true })).toBeVisible();

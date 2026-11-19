@@ -7,7 +7,7 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::{Value, json};
 use std::net::Ipv6Addr;
 
-pub(super) fn xray_config(profiles: &Value) -> Result<Value> {
+pub(super) fn xray_config(profiles: &Value, portal: Option<&str>) -> Result<Value> {
     let profiles = profiles["profiles"]
         .as_array()
         .context("Missing profiles")?;
@@ -24,8 +24,18 @@ pub(super) fn xray_config(profiles: &Value) -> Result<Value> {
         outbound["tag"] = json!(name);
         outbounds.push(outbound);
     }
+    if let Some(host) = portal {
+        let builtin = profiles
+            .iter()
+            .find_map(|profile| {
+                let name = profile["name"].as_str()?;
+                super::builtin_profile(name).then_some(name)
+            })
+            .context("Missing private authentication outbound")?;
+        rules.insert(0, json!({"type":"field","domain":[format!("full:{host}")],"network":"tcp","port":"443","outboundTag":builtin}));
+    }
     Ok(
-        json!({"log":{"loglevel":"warning"},"inbounds":inbounds,"outbounds":outbounds,"routing":{"rules":rules}}),
+        json!({"log":{"loglevel":"warning"},"inbounds":inbounds,"outbounds":outbounds,"routing":{"domainStrategy":"AsIs","rules":rules}}),
     )
 }
 
@@ -52,6 +62,12 @@ fn escape(value: &str) -> String {
 
 fn profile_link(profile: &Value) -> Result<Option<ShareLink>> {
     let name = text(&profile["name"]);
+    if let Some(url) = profile["external_url"].as_str() {
+        return Ok(Some(ShareLink {
+            name: name.to_owned(),
+            url: url.to_owned(),
+        }));
+    }
     let outbound = &profile["outbound"];
     let settings = &outbound["settings"];
     let stream = &outbound["streamSettings"];

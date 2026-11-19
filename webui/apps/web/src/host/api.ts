@@ -54,7 +54,7 @@ export function createAdminApi(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 180000);
     try {
-      const response = await fetch('/admin/api/' + path, {
+      const response = await fetch('/nc/api/' + path, {
         method: body === undefined ? 'GET' : 'POST',
         credentials: 'same-origin',
         cache: 'no-store',
@@ -141,6 +141,13 @@ export function createAdminApi(
     downloadClients,
     versions: () => request('versions', versionsSchema),
     proxyAccess: () => request('proxy-access', proxyAccessSchema),
+    clientLinks: async (id) =>
+      (
+        await request(
+          'proxy-access/client-links/' + encodeURIComponent(id),
+          z.object({ links: z.array(z.string()) }),
+        )
+      ).links,
     changeProxyAccess: (input) => request('proxy-access', proxyAccessSchema, input),
     downloadProxyUsers: async () => {
       const users = await request('proxy-access/export', proxyUsersSchema);

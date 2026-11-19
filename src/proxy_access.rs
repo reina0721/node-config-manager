@@ -1,5 +1,6 @@
 //! Browser leases authorize device profiles independently of release snapshots.
 pub(crate) mod amneziawg;
+mod clients;
 mod gateway;
 pub(crate) mod masque;
 mod meter;
@@ -32,6 +33,7 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 pub use runtime::{launch, prepare, reserved_port, serve};
+pub(crate) mod certificate;
 
 const DEFAULT_TTL: u64 = 7 * 24 * 60 * 60;
 const MAX_USERS: usize = 4096;
@@ -46,6 +48,8 @@ struct Database {
     health_id: Uuid,
     users: BTreeMap<String, Account>,
     devices: BTreeMap<Uuid, Device>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    clients: BTreeMap<Uuid, clients::Client>,
 }
 
 impl Default for Database {
@@ -56,6 +60,7 @@ impl Default for Database {
             health_id: Uuid::new_v4(),
             users: BTreeMap::new(),
             devices: BTreeMap::new(),
+            clients: BTreeMap::new(),
         }
     }
 }
@@ -139,6 +144,8 @@ impl Account {
 #[derive(Clone, Serialize, Deserialize)]
 struct Device {
     username: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client: Option<Uuid>,
     label: String,
     transit: Uuid,
     portal: Uuid,
@@ -321,9 +328,21 @@ pub enum Change {
     CreateDevice {
         username: String,
         label: String,
+        #[serde(default)]
+        client: Option<Uuid>,
     },
     DeleteDevice {
         device: Uuid,
+    },
+    SaveClient {
+        id: Option<Uuid>,
+        name: String,
+        inbounds: BTreeSet<Uuid>,
+        usernames: BTreeSet<String>,
+        links: Vec<String>,
+    },
+    DeleteClient {
+        id: Uuid,
     },
 }
 
@@ -363,7 +382,7 @@ impl Database {
                 "devices":self.devices.iter().filter(|(_, device)| &device.username == username)
                     .map(|(id, device)| {
                         let expires = if available { self.expiry(device, now) } else { None };
-                        json!({"id":id,"label":device.label,"expires":expires,
+                        json!({"id":id,"label":device.label,"expires":expires,"client":device.client,
                             "connections": if expires.is_some() { online.get(id).copied().unwrap_or(0) } else { 0 }})
                     })
                     .collect::<Vec<_>>()
@@ -371,6 +390,7 @@ impl Database {
         }).collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"enabled":self.enabled, "ttl_seconds":self.ttl_seconds, "portal":portal, "users":users,
+                "clients":self.clients.iter().map(|(id, client)| client.view(*id)).collect::<Vec<_>>(),
                 "extra_profile_formats":["xray-config","links","qr","native"], "traffic_cycles":true}),
         )
     }
@@ -441,7 +461,7 @@ impl Database {
     }
 }
 
-fn portal_url(store: &Store) -> String {
+pub(crate) fn portal_url(store: &Store) -> String {
     runtime::installed(store)
         .or_else(|_| store.inputs().map(|(config, _)| config))
         .map(|config| runtime::portal(&config))
@@ -474,6 +494,18 @@ pub fn has_traffic_cycles(store: &Store) -> Result<bool> {
     }))
 }
 
+pub(crate) fn has_client_definitions(store: &Store) -> Result<bool> {
+    Ok(Access(store)
+        .read()?
+        .is_some_and(|db| !db.clients.is_empty()))
+}
+
+pub(crate) fn client_links(store: &Store, id: Uuid) -> Result<Value> {
+    let data = Access(store).read()?.context("not_found")?;
+    let client = data.clients.get(&id).context("not_found")?;
+    Ok(json!({"links": client.links}))
+}
+
 pub fn export(store: &Store) -> Result<Value> {
     Ok(Access(store).read()?.unwrap_or_default().export())
 }
@@ -482,7 +514,11 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
     // Take the lifecycle lock before changing Xray's installed configuration.
     let _host = matches!(
         action,
-        Change::Settings { .. } | Change::CreateDevice { .. } | Change::GroupMembers { .. }
+        Change::Settings { .. }
+            | Change::CreateDevice { .. }
+            | Change::GroupMembers { .. }
+            | Change::SaveClient { .. }
+            | Change::DeleteClient { .. }
     )
     .then(|| store.lock())
     .transpose()?;
@@ -514,6 +550,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                             && a.traffic_cycle.is_none()),
                         "policies_require_proxy_access"
                     );
+                    ensure!(data.clients.is_empty(), "policies_require_proxy_access");
                 }
                 refresh_xray = true;
                 runtime::validate(store, binary)?;
@@ -549,6 +586,11 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
             data.users.retain(|username, _| !names.contains(username));
             data.devices
                 .retain(|_, device| !names.contains(&device.username));
+            for definition in data.clients.values_mut() {
+                definition
+                    .usernames
+                    .retain(|username| !names.contains(username));
+            }
         }
         Change::Edit {
             username,
@@ -635,8 +677,22 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                 next_reset: admin_auth::now().saturating_add(seconds),
             });
         }
-        Change::CreateDevice { username, label } => {
-            ensure!(data.users.contains_key(&username), "not_found");
+        Change::CreateDevice {
+            username,
+            label,
+            client,
+        } => {
+            ensure!(
+                data.users.contains_key(&username)
+                    && client.is_none_or(|id| {
+                        data.enabled
+                            && data
+                                .clients
+                                .get(&id)
+                                .is_some_and(|record| record.usernames.contains(&username))
+                    }),
+                "not_found"
+            );
             ensure!(
                 !label.trim().is_empty()
                     && label.len() <= 96
@@ -648,6 +704,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                 Uuid::new_v4(),
                 Device {
                     username,
+                    client,
                     label: label.trim().into(),
                     transit: Uuid::new_v4(),
                     portal: Uuid::new_v4(),
@@ -662,6 +719,32 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
         }
         Change::DeleteDevice { device } => {
             data.devices.remove(&device).context("not_found")?;
+        }
+        Change::SaveClient {
+            id,
+            name,
+            inbounds,
+            usernames,
+            links,
+        } => {
+            let installed = runtime::installed(store)?;
+            refresh_xray = data.save_client(
+                &installed,
+                id,
+                clients::Client {
+                    name,
+                    inbounds,
+                    usernames,
+                    links,
+                },
+            )?;
+            if refresh_xray {
+                runtime::validate(store, binary)?;
+            }
+        }
+        Change::DeleteClient { id } => {
+            data.clients.remove(&id).context("not_found")?;
+            data.devices.retain(|_, device| device.client != Some(id));
         }
     }
     let mode_changed = previous.enabled != data.enabled;
@@ -710,6 +793,12 @@ pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {
     let (config, secrets) = store.verify(&current)?;
     let data = Access(store).read()?.context("not_found")?;
     let device = data.devices.get(&id).context("not_found")?;
+    ensure!(
+        data.users
+            .get(&device.username)
+            .is_some_and(|account| account.active(admin_auth::now())),
+        "not_found"
+    );
     if format == "subscriptions" {
         ensure!(data.enabled && config.distributes(), "not_found");
         let key = crate::share::device_key(store)?;
@@ -721,13 +810,16 @@ pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {
         } else {
             format!("https://{domain}:{port}")
         };
+        let login = runtime::portal(&config);
         return Ok(serde_json::to_string_pretty(&json!({
             "token": token,
             "node_page": format!("{origin}/nodes/"),
             "mihomo": format!("{origin}/nodes/sub/mihomo?token={token}"),
             "mihomo-weighted": format!("{origin}/nodes/sub/mihomo-weighted?token={token}"),
             "xray": format!("{origin}/nodes/sub/xray?token={token}"),
-            "browser_login": runtime::portal(&config),
+            "browser_login":login,
+            "browser_login_route":crate::render::private_portal_host(&login)
+                .map(|hostname| format!("DOMAIN,{hostname},nodectl-auth")),
         }))?);
     }
     Ok(String::from_utf8(render_profile(
@@ -757,11 +849,16 @@ pub(crate) fn subscription_device(store: &Store, token: &str) -> Result<Option<U
     let Some(data) = Access(store).read()?.filter(|data| data.enabled) else {
         return Ok(None);
     };
-    let Some(device) = data
-        .devices
-        .get(&id)
-        .filter(|d| data.users.contains_key(&d.username))
-    else {
+    let Some(device) = data.devices.get(&id).filter(|device| {
+        data.users
+            .get(&device.username)
+            .is_some_and(|account| account.active(admin_auth::now()))
+            && device.client.is_none_or(|id| {
+                data.clients
+                    .get(&id)
+                    .is_some_and(|profile| profile.usernames.contains(&device.username))
+            })
+    }) else {
         return Ok(None);
     };
     let Ok(key) = crate::share::device_key(store) else {
@@ -792,12 +889,22 @@ pub(crate) fn render_profile(
     } else {
         &no_groups
     };
-    crate::render::device_profiles(
-        config,
+    let client = device
+        .client
+        .map(|id| data.clients.get(&id).context("not_found"))
+        .transpose()?;
+    ensure!(
+        client.is_none_or(|profile| profile.usernames.contains(&device.username)),
+        "not_found"
+    );
+    let scoped = client.map(|profile| profile.restrict(config));
+    crate::render::device_profiles_with_links(
+        scoped.as_ref().unwrap_or(config),
         secrets,
         id,
         groups,
         format,
         &runtime::portal(config),
+        client.map(|profile| profile.links.as_slice()),
     )
 }

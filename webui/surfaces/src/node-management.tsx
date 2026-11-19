@@ -46,6 +46,7 @@ export type NodeManagementPort = Readonly<{
   jobDetails: (id: string, node?: string) => Promise<ManagedJob>;
   versions: () => Promise<VersionsView>;
   proxyAccess: () => Promise<ProxyAccess>;
+  clientLinks: (id: string) => Promise<string[]>;
   changeProxyAccess: (input: ProxyAccessChange) => Promise<ProxyAccess>;
   downloadProxyUsers: () => Promise<void>;
   importProxyUsers: () => Promise<ProxyAccess | null>;

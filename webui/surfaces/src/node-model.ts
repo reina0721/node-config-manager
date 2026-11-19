@@ -261,6 +261,8 @@ const node = z
 export const nodeConfigurationSchema = z
   .object({
     schema_version: z.number().int(),
+    auth_portal: z.object({ root_domain: z.string(), prefix: z.string() }).optional(),
+    shared_console: z.boolean().optional(),
     node,
     ports: z.object({ http: z.number(), https: z.number(), reality: z.number() }).strict(),
     transport: z
@@ -592,6 +594,17 @@ export const nativeProfileSchema = z.object({
 });
 export type NativeProfile = z.infer<typeof nativeProfileSchema>;
 export const proxyAccessSchema = z.object({
+  clients: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        inbounds: z.array(z.string()),
+        usernames: z.array(z.string()),
+        link_count: z.number(),
+      }),
+    )
+    .default([]),
   traffic_cycles: z.boolean().optional(),
   extra_profile_formats: z.array(z.enum(['xray-config', 'links', 'qr', 'native'])).optional(),
   enabled: z.boolean(),
@@ -616,6 +629,7 @@ export const proxyAccessSchema = z.object({
         z.object({
           id: z.string(),
           label: z.string(),
+          client: z.string().nullable().default(null),
           expires: z.number().nullable(),
           connections: z.number().default(0),
         }),
@@ -625,6 +639,15 @@ export const proxyAccessSchema = z.object({
 });
 export type ProxyAccess = z.infer<typeof proxyAccessSchema>;
 export type ProxyAccessChange =
+  | {
+      action: 'save-client';
+      id?: string;
+      name: string;
+      usernames: string[];
+      inbounds: string[];
+      links: string[];
+    }
+  | { action: 'delete-client'; id: string }
   | { action: 'settings'; enabled: boolean; ttl_seconds: number }
   | { action: 'create'; users: { username: string; password: string; device_limit?: number }[] }
   | { action: 'import'; users: z.infer<typeof proxyUsersSchema> }
@@ -640,7 +663,7 @@ export type ProxyAccessChange =
   | { action: 'group-members'; group: string; usernames: string[] }
   | { action: 'reset-traffic'; username: string }
   | { action: 'traffic-cycle'; username: string; interval_seconds: number | null }
-  | { action: 'create-device'; username: string; label: string }
+  | { action: 'create-device'; username: string; label: string; client?: string }
   | { action: 'delete-device'; device: string };
 
 export const versionsSchema = z.object({

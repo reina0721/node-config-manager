@@ -571,6 +571,11 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
 }
 
 pub fn check(store: &Store, id: &str, reference: Reference) -> Result<()> {
+    let config = store.verify(id)?.0;
+    crate::proxy_access::certificate::verify_public_dns(&config)?;
+    if crate::proxy_access::enabled(store)? {
+        crate::proxy_access::certificate::verify(&config)?;
+    }
     linux_root()?;
     store.release(id)?;
     let receipt_path = store.state_dir.join("checks").join(id);
@@ -675,7 +680,7 @@ pub(crate) fn managed_cn_policy(
 }
 const SHARE_SOURCE: &str = "systemd/nodectl-share.service";
 
-fn checkpoint(_name: &str) -> Result<()> {
+pub(crate) fn checkpoint(_name: &str) -> Result<()> {
     #[cfg(feature = "integration-test")]
     ensure!(
         !std::env::var("NODECTL_FAILPOINT")
@@ -1663,7 +1668,16 @@ fn activate(
     let xray_changed = changed(store, id, old, "xray.json")?
         || changed(store, id, old, "systemd/xray.service")?
         || (grants_changed && crate::proxy_access::enabled(store)?);
-    if xray_changed || !tx.services["xray"].active {
+    let portal_changed = old_c.as_ref().is_some_and(|old| {
+        old.auth_portal
+            .as_ref()
+            .map(|p| (&p.root_domain, &p.prefix))
+            != c.auth_portal.as_ref().map(|p| (&p.root_domain, &p.prefix))
+    }) && crate::proxy_access::enabled(store)?;
+    if portal_changed {
+        command("systemctl", &["restart", "nodectl-proxy-access"])?;
+    }
+    if xray_changed || portal_changed || !tx.services["xray"].active {
         command("systemctl", &["restart", "xray"])?;
     }
     command("systemctl", &["enable", "xray"])?;

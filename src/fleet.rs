@@ -126,7 +126,7 @@ pub fn register(store: &Store, registration: Register) -> Result<Value> {
     ensure!(
         name(&registration.name)
             && config::domain(&registration.hostname)
-            && registration.port >= 1024
+            && (registration.port == 443 || registration.port >= 1024)
             && valid_token(&registration.token)
             && !registration.address.is_multicast()
             && !registration.address.is_unspecified()
@@ -259,14 +259,18 @@ pub fn forward(store: &Store, id: Uuid, path: &str, post: bool, body: &[u8]) -> 
 
 fn request(peer: &Register, path: &str, post: bool, body: &[u8]) -> Result<Value> {
     host::trusted_binary(std::path::Path::new("/usr/bin/curl"))?;
-    let origin = format!("https://{}:{}", peer.hostname, peer.port);
+    let (origin, base) = if peer.port == 443 {
+        (format!("https://{}", peer.hostname), "nc")
+    } else {
+        (format!("https://{}:{}", peer.hostname, peer.port), "admin")
+    };
     let address = if peer.address.is_ipv6() {
         format!("[{}]", peer.address)
     } else {
         peer.address.to_string()
     };
     let resolve = format!("{}:{}:{address}", peer.hostname, peer.port);
-    let url = format!("{origin}/admin/api/peer/{path}");
+    let url = format!("{origin}/{base}/api/peer/{path}");
     let mut command = Command::new("/usr/bin/curl");
     command.args([
         "--disable",

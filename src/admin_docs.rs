@@ -248,7 +248,7 @@ pub fn openapi() -> Value {
     paths.get_mut("/login").unwrap()["post"]["security"] = json!([]);
     json!({
         "openapi":"3.1.0","info":{"title":"nodectl Admin API","version":env!("CARGO_PKG_VERSION")},
-        "servers":[{"url":"/admin/api"}],"security":[{"session":[]}],
+        "servers":[{"url":"/nc/api"}],"security":[{"session":[]}],
         "paths":paths,
         "components":{"securitySchemes":{
             "session":{"type":"apiKey","in":"cookie","name":"__Host-nodectl_admin"},

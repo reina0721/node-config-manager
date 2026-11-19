@@ -18,7 +18,7 @@ const deploymentMode = resolveDeploymentMode();
 
 export default function nextConfig(phase: string): NextConfig {
   return {
-    basePath: '/admin',
+    basePath: '/nc',
     trailingSlash: true,
     // Playwright 的 dev server 使用独立目录，避免 production build 覆盖正在运行的开发缓存。
     distDir:

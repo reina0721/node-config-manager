@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 mod client_export;
+pub(crate) mod external;
 
 pub const TEMPLATE_VERSION: &str = "4";
 
@@ -294,14 +295,15 @@ fn mihomo_transport(node: &mut Value, stream: &Value) {
 }
 
 pub fn mihomo_weighted(c: &Config, s: &Secrets, browser_login: Option<&str>) -> Result<Vec<u8>> {
-    weighted_proxies(c, mihomo_nodes(c, s)?, browser_login, false)
+    weighted_proxies(c, mihomo_nodes(c, s)?, browser_login, false, Vec::new())
 }
 
 fn weighted_proxies(
     c: &Config,
-    proxies: Vec<Value>,
+    mut proxies: Vec<Value>,
     browser_login: Option<&str>,
     use_protocol_groups: bool,
+    external: Vec<Value>,
 ) -> Result<Vec<u8>> {
     let mut protocols = [Vec::new(), Vec::new(), Vec::new()];
     let mut manual = Vec::new();
@@ -371,7 +373,11 @@ fn weighted_proxies(
     };
     const AUTO: &str = "nodectl 按比例分流";
     const GROUP: &str = "nodectl";
-    let choices: Vec<&str> = std::iter::once(AUTO).chain(manual).collect();
+    const EXTERNAL: &str = "外部节点";
+    let mut choices: Vec<&str> = std::iter::once(AUTO).chain(manual).collect();
+    if !external.is_empty() {
+        choices.push(EXTERNAL);
+    }
     let balanced = |name, members: Vec<&str>| {
         json!({"name":name, "type":"load-balance", "strategy":"round-robin", "proxies":members,
         "url":health_url, "expected-status":"200", "interval":300, "hidden":true})
@@ -388,16 +394,56 @@ fn weighted_proxies(
                 .map(|(name, members)| balanced(name, members)),
         );
     }
-    Ok(serde_json::to_vec_pretty(&json!({
+    if !external.is_empty() {
+        groups.push(json!({"name":EXTERNAL,"type":"select","proxies":external.iter().map(|node| &node["name"]).collect::<Vec<_>>() }));
+    }
+    let mut rules = vec![format!("MATCH,{GROUP}")];
+    let host = browser_login.and_then(private_portal_host);
+    if let Some(host) = host {
+        const AUTH_GROUP: &str = "nodectl-auth";
+        let builtins = proxies
+            .iter()
+            .filter_map(|proxy| {
+                let name = proxy["name"].as_str()?;
+                builtin_profile(name).then_some(name)
+            })
+            .collect::<Vec<_>>();
+        groups.push(json!({"name":AUTH_GROUP,"type":"select","hidden":true,"proxies":builtins}));
+        rules.insert(0, format!("DOMAIN,{host},{AUTH_GROUP}"));
+    }
+    proxies.extend(external);
+    let mut profile = json!({
         "mixed-port": 7890,
         "allow-lan": false,
         "mode": "rule",
         "proxies": proxies,
         "proxy-groups": groups,
-        "rules": [format!("MATCH,{GROUP}")],
-    }))?)
+        "rules": rules,
+    });
+    if let Some(host) = host {
+        profile["dns"] = json!({
+            "enable":true,"enhanced-mode":"fake-ip","fake-ip-range":"198.18.0.1/16",
+            "fake-ip-filter-mode":"whitelist","fake-ip-filter":[host],
+            "nameserver":["https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query"]
+        });
+    }
+    Ok(serde_json::to_vec_pretty(&profile)?)
 }
 
+pub(crate) fn private_portal_host(origin: &str) -> Option<&str> {
+    origin
+        .strip_prefix("https://")
+        .filter(|host| crate::config::domain(host))
+}
+
+fn builtin_profile(name: &str) -> bool {
+    matches!(
+        name,
+        "xhttp-chrome" | "xhttp-ios" | "xhttp-firefox" | "xhttp-qq" | "ws" | "reality"
+    )
+}
+
+#[cfg(test)]
 pub fn device_profiles(
     c: &Config,
     s: &Secrets,
@@ -405,6 +451,18 @@ pub fn device_profiles(
     groups: &std::collections::BTreeSet<uuid::Uuid>,
     format: &str,
     login: &str,
+) -> Result<Vec<u8>> {
+    device_profiles_with_links(c, s, id, groups, format, login, None)
+}
+
+pub fn device_profiles_with_links(
+    c: &Config,
+    s: &Secrets,
+    id: uuid::Uuid,
+    groups: &std::collections::BTreeSet<uuid::Uuid>,
+    format: &str,
+    login: &str,
+    links: Option<&[String]>,
 ) -> Result<Vec<u8>> {
     use crate::catalogue::Format;
     let mut identity = s.clone();
@@ -420,6 +478,12 @@ pub fn device_profiles(
         ]
         .contains(kind)
     });
+    let external = links
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(index, link)| Ok((external::parse(link, index)?, link)))
+        .collect::<Result<Vec<_>>>()?;
     if let Some((_, id)) = native {
         ensure!(
             id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -431,7 +495,7 @@ pub fn device_profiles(
             if ["xray", "xray-config", "links", "qr", "native-list"].contains(&known)
                 || native.is_some() =>
         {
-            let mut profiles = profiles(c, &identity)?;
+            let mut profiles = profiles_for_device(c, &identity, links.is_some())?;
             profiles["profiles"].as_array_mut().unwrap().extend(
                 crate::catalogue::client_entries(c, s, id, groups, Format::Xray)?
                     .into_iter()
@@ -457,6 +521,20 @@ pub fn device_profiles(
                     crate::proxy_access::mtproto::link_profiles(c, s, id, groups),
                 );
             }
+            if matches!(format, "xray" | "xray-config" | "links" | "qr") {
+                profiles["profiles"].as_array_mut().unwrap().extend(
+                    external
+                        .iter()
+                        .filter(|(item, _)| item.xray || matches!(format, "links" | "qr"))
+                        .map(|(item, original)| {
+                            let mut profile = json!({"name":item.name,"outbound":item.outbound});
+                            if matches!(format, "links" | "qr") {
+                                profile["external_url"] = json!(original);
+                            }
+                            profile
+                        }),
+                );
+            }
             match format {
                 _ if let Some((kind, id)) = native => {
                     client_export::native_profile(&profiles, kind, id)
@@ -466,6 +544,7 @@ pub fn device_profiles(
                 )?)?),
                 "xray-config" => Ok(serde_json::to_vec_pretty(&client_export::xray_config(
                     &profiles,
+                    private_portal_host(login),
                 )?)?),
                 "qr" => client_export::qr_sheet(&profiles),
                 "links" => Ok(client_export::links(&profiles)?
@@ -477,7 +556,13 @@ pub fn device_profiles(
             }
         }
         "mihomo" | "mihomo-weighted" => {
-            let mut proxies = mihomo_nodes(c, &identity)?;
+            let profiles = profiles_for_device(c, &identity, links.is_some())?;
+            let mut proxies = profiles["profiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| mihomo_node(p["name"].as_str().unwrap(), &p["outbound"], None))
+                .collect::<Vec<_>>();
             let entries = crate::catalogue::client_entries(c, s, id, groups, Format::Mihomo)?;
             let extended = !entries.is_empty();
             proxies.extend(
@@ -485,10 +570,22 @@ pub fn device_profiles(
                     .into_iter()
                     .map(|entry| mihomo_node(&entry.name, &entry.outbound, entry.host)),
             );
+            let external = external
+                .iter()
+                .map(|(item, _)| {
+                    let mut node = mihomo_node(&item.name, &item.outbound, None);
+                    let stream = &item.outbound["streamSettings"];
+                    if item.outbound["protocol"] == "trojan" && stream["network"] == "ws" {
+                        node["network"] = json!("ws");
+                    }
+                    node
+                })
+                .collect::<Vec<_>>();
             if format == "mihomo" {
+                proxies.extend(external);
                 Ok(serde_json::to_vec_pretty(&json!({"proxies":proxies}))?)
             } else {
-                weighted_proxies(c, proxies, Some(login), extended)
+                weighted_proxies(c, proxies, Some(login), extended, external)
             }
         }
         _ => anyhow::bail!("bad_request"),
@@ -496,6 +593,10 @@ pub fn device_profiles(
 }
 
 pub fn profiles(c: &Config, s: &Secrets) -> Result<Value> {
+    profiles_for_device(c, s, false)
+}
+
+fn profiles_for_device(c: &Config, s: &Secrets, all_fingerprints: bool) -> Result<Value> {
     let total: u64 = c
         .clients
         .fingerprint_weights
@@ -503,10 +604,16 @@ pub fn profiles(c: &Config, s: &Secrets) -> Result<Value> {
         .map(|&n| u64::from(n))
         .sum();
     let mut profiles = vec![];
-    for (fp, &weight) in &c.clients.fingerprint_weights {
-        if weight > 0 {
+    let mut fingerprints = c.clients.fingerprint_weights.clone();
+    if all_fingerprints {
+        for name in ["chrome", "ios", "firefox", "qq"] {
+            fingerprints.entry(name.into()).or_insert(0);
+        }
+    }
+    for (fp, weight) in fingerprints {
+        if weight > 0 || all_fingerprints {
             profiles.push(json!({"name":format!("xhttp-{fp}"),"weight":{"numerator":u64::from(c.clients.xhttp_weight)*u64::from(weight),"denominator":100*total},
-                "fingerprint_copies":weight,"outbound":outbound(c,s,"xhttp",fp)?}));
+                "fingerprint_copies":weight,"outbound":outbound(c,s,"xhttp",&fp)?}));
         }
     }
     for (kind, weight) in [
@@ -672,6 +779,20 @@ pub fn files_with_geodata(
         ),
     ]);
     crate::web_services::nginx(c, &mut vars)?;
+    if c.shared_console {
+        vars.entry("SHARE_LIMIT").or_default().push_str(
+            "\n    limit_req_zone $binary_remote_addr zone=nc_requests:1m rate=2r/s;\n    limit_req_zone $binary_remote_addr zone=nc_login:1m rate=10r/m;"
+        );
+        vars.entry("WEB_ROUTES")
+            .or_default()
+            .push_str("\n        include /etc/nodectl-admin/shared.d/*.conf;");
+    }
+    if let Some(host) = c.auth_domain() {
+        vars.entry("FILES_SERVER").or_default().push_str(&format!(
+            "\n    server {{\n{}\n        server_name {host};\n        ssl_reject_handshake on;\n        return 421;\n    }}",
+            listeners(false)
+        ));
+    }
     vars.insert(
         "CN_UNIT",
         if c.routes_cn() {
