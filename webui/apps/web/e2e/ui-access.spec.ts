@@ -36,7 +36,7 @@ test('浏览器认证只在面板设置编辑，设备配置只在客户端下�
     let account = await open();
     await account.getByLabel('设备名称', { exact: true }).fill('Chromium fixture');
     await account.getByRole('button', { name: '登记设备', exact: true }).click();
-    await expect(account.getByRole('row', { name: /^Chromium fixture/ })).toBeVisible();
+    await expect(account.getByRole('heading', { name: 'Chromium fixture' })).toBeVisible();
     await account.getByRole('button', { name: '关闭抽屉' }).click();
 
     await navigate(page, '面板设置');

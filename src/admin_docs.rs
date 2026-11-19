@@ -101,7 +101,10 @@ pub fn openapi() -> Value {
             "Read or refresh the current session and its CSRF token",
         ),
         ("/overview", "Node version, health, and service status"),
-        ("/config", "Typed configuration and revision"),
+        (
+            "/config",
+            "Typed configuration, revision and supported inbound combinations",
+        ),
         ("/nodes", "Active subscription and protocol entry points"),
         ("/services", "Managed services and active state"),
         ("/network", "Network and WARP status"),
@@ -230,7 +233,11 @@ pub fn openapi() -> Value {
             "csrf":{"type":"apiKey","in":"header","name":"X-CSRF-Token"},
             "peer":{"type":"http","scheme":"bearer","description":"Scoped pairing token on /peer/ routes, sent only over HTTPS."}
         },"schemas":{
-            "Error":{"type":"object","required":["error","message"],"properties":{"error":{"type":"string"},"message":{"type":"string"}}},
+            "Error":{"type":"object","required":["error","message"],"properties":{
+                "error":{"type":"string"},"message":{"type":"string"},
+                "field_errors":{"type":"array","items":{"type":"object","required":["field","code","message"],
+                    "properties":{"field":{"type":"string"},"code":{"type":"string"},"message":{"type":"string"}}}}
+            }},
             "Task":{"type":"object","required":["job"],"properties":{"job":{"type":"string","example":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
         }}
     })

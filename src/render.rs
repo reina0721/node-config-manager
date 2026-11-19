@@ -167,9 +167,11 @@ fn mihomo_node(c: &Config, name: &str, o: &Value, host: Option<&crate::catalogue
     if stream["network"] == "ws" {
         node["alpn"] = json!(["http/1.1"]);
         node["ws-opts"] = stream["wsSettings"].clone();
-    } else {
+    } else if stream["network"] == "xhttp" {
         node["alpn"] = json!(["h2", "http/1.1"]);
         node["xhttp-opts"] = stream["xhttpSettings"].clone();
+    } else if stream["network"] == "raw" {
+        node["network"] = json!("tcp");
     }
     if real {
         // The pinned REALITY server requires the hybrid key share. Mihomo
@@ -205,6 +207,9 @@ fn weighted_proxies(
     for proxy in &proxies {
         let name = proxy["name"].as_str().context("Proxy name missing")?;
         manual.push(name);
+        if proxy["network"] == "tcp" {
+            continue;
+        }
         let protocol = if proxy["reality-opts"].is_object() {
             2
         } else if proxy["network"] == "ws" {

@@ -9,6 +9,7 @@ import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import {
   useNodeManagement,
   type CatalogueEdit,
+  adminFieldErrorSchema,
   type ConfigPlan,
   type JobResult,
   type ProxyAccess,
@@ -16,7 +17,7 @@ import {
 } from '../../../src/node-management';
 import { NodePage, TaskResult, useNodeQuery, NodeLoading, useNodeText } from './common';
 import { EditorDrawer, EnabledBadge, ListFilters, useListFilters } from './collection-controls';
-import { protocols, toggle } from './catalogue-fields';
+import { inboundErrors, inboundLabel, protocols, toggle } from './catalogue-fields';
 const PlanReview = lazy(() => import('./plan-review'));
 const GroupForm = lazy(() =>
   import('./catalogue-forms').then((module) => ({ default: module.GroupForm })),
@@ -131,7 +132,7 @@ function managedRows(config: NodeConfiguration, kind: Kind): Row[] {
       return Object.entries(m?.inbounds ?? {}).map(([id, value]) => ({
         id,
         name: value.remark,
-        detail: protocols[value.protocol] + ' · ' + (value.port || config.ports.https),
+        detail: inboundLabel(value) + ' · ' + (value.port || config.ports.https),
         enabled: value.enabled,
         edit: { id, kind, value },
       }));
@@ -185,12 +186,24 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
   const [plan, setPlan] = useState<ConfigPlan | null>(null);
   const [probe, setProbe] = useState<JobResult | null>(null);
   const [error, setError] = useState('');
+  const [serverFields, setServerFields] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const config = query.data?.config;
+  const localFields =
+    edit?.kind === 'inbound' && edit.value && config
+      ? inboundErrors(edit.value, config, edit.id)
+      : {};
+  const fieldMessages = {
+    ...Object.fromEntries(
+      Object.entries(localFields).map(([field, message]) => [field, t(message)]),
+    ),
+    ...serverFields,
+  };
   const beginEdit = (draft: CatalogueEdit) => {
     if (!query.data) return;
     setEdit(draft);
     setBaseline({ base: query.data.base, edit: draft });
+    setServerFields({});
     setPlan(null);
     setError('');
   };
@@ -216,8 +229,15 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
     setPlan(null);
     try {
       setPlan(await api.previewCatalogue(change, baseline.base));
-      setEdit(null);
     } catch (e) {
+      if (typeof e === 'object' && e !== null && 'fields' in e && Array.isArray(e.fields)) {
+        const fields: Record<string, string> = {};
+        for (const issue of e.fields as unknown[]) {
+          const parsed = adminFieldErrorSchema.safeParse(issue);
+          if (parsed.success) fields[parsed.data.field] = parsed.data.message;
+        }
+        setServerFields(fields);
+      }
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -355,7 +375,7 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
             />
           </Section>
           <Suspense fallback={<NodeLoading />}>
-            {edit?.value && (
+            {edit?.value && !plan && (
               <EditorDrawer
                 title={
                   t(edit.id ? 'console.edit' : 'catalogue.add') + ' · ' + t('nav.' + names[kind])
@@ -418,7 +438,13 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
                   <InboundForm
                     httpsPort={config.ports.https}
                     data={edit.value}
-                    update={(value) => setEdit({ ...edit, value })}
+                    errors={fieldMessages}
+                    combinations={query.data?.inbound_capabilities?.combinations}
+                    update={(value) => {
+                      setEdit({ ...edit, value });
+                      setServerFields({});
+                      setError('');
+                    }}
                   />
                 )}
                 {edit.kind === 'group' && (
@@ -459,7 +485,7 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
                 <div className="mt-4 flex flex-wrap gap-3">
                   <Action
                     loading={busy}
-                    disabled={busy || stale}
+                    disabled={busy || stale || Object.keys(localFields).length > 0}
                     onPress={() => void preview(edit)}
                   >
                     {t('catalogue.preview')}
@@ -482,8 +508,11 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
               <PlanReview
                 key={plan.plan}
                 plan={plan}
+                onBack={() => setPlan(null)}
                 onApplied={async () => {
                   setPlan(null);
+                  setEdit(null);
+                  setBaseline(null);
                   await query.refresh();
                 }}
               />

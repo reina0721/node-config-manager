@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { TabsView } from '@community-go/ui-adapter/data-display';
 import { SelectField, SwitchField, TextField } from '@community-go/ui-adapter/form-field';
 import type {
+  InboundCombination,
   ManagedGroup,
   ManagedHost,
   ManagedInbound,
@@ -10,7 +11,7 @@ import type {
 } from '../../../src/node-management';
 import { useNodeText } from './common';
 
-import { protocols, split, toggle } from './catalogue-fields';
+import { inboundStack, protocols, split, toggle } from './catalogue-fields';
 
 export function HostForm({
   data,
@@ -61,6 +62,10 @@ export function HostForm({
     label: label(id),
     content: <div className="grid gap-4 py-4">{fields}</div>,
   });
+  const selected = config.management?.inbounds?.[data.inbound];
+  const stack = inboundStack(
+    selected ?? (data.inbound === 'ws' || data.inbound === 'reality' ? data.inbound : 'xhttp'),
+  );
   const inbounds = [
     ...Object.entries(protocols).map(([value, label]) => ({ value, label })),
     ...Object.entries(config.management?.inbounds ?? {}).map(([value, inbound]) => ({
@@ -87,7 +92,25 @@ export function HostForm({
               label={label('inbound')}
               options={inbounds}
               value={data.inbound}
-              onValueChange={(inbound) => update({ ...data, inbound })}
+              onValueChange={(inbound) => {
+                const target = config.management?.inbounds?.[inbound];
+                const next = inboundStack(
+                  target ?? (inbound === 'ws' || inbound === 'reality' ? inbound : 'xhttp'),
+                );
+                update({
+                  ...data,
+                  inbound,
+                  path: next.transport === 'raw' ? '' : data.path,
+                  alpn:
+                    next.security === 'reality'
+                      ? []
+                      : data.alpn.filter(
+                          (value) => next.transport !== 'ws' || value === 'http/1.1',
+                        ),
+                  host_header:
+                    next.transport === 'raw' || next.security === 'reality' ? '' : data.host_header,
+                });
+              }}
             />
             {list('addresses')}
             {number('port', label('portHint'))}
@@ -104,14 +127,16 @@ export function HostForm({
           'security',
           <>
             {text('sni', label('inherit'))}
-            {list('alpn')}
+            {stack.security === 'tls' && list('alpn')}
           </>,
         ),
         tab(
           'advanced',
           <>
-            {text('host_header', label('inherit'))}
-            {text('path', label('inherit'))}
+            {stack.transport !== 'raw' &&
+              stack.security === 'tls' &&
+              text('host_header', label('inherit'))}
+            {stack.transport !== 'raw' && text('path', label('inherit'))}
             <SelectField
               label={label('fingerprint')}
               options={[
@@ -172,45 +197,112 @@ export function InboundForm({
   data,
   update,
   httpsPort,
-}: {
+  combinations,
+  errors,
+}: Readonly<{
   data: ManagedInbound;
   update: (value: ManagedInbound) => void;
   httpsPort: number;
-}) {
+  combinations: readonly InboundCombination[] | undefined;
+  errors: Readonly<Record<string, string | undefined>>;
+}>) {
   const t = useNodeText();
-  const reality = data.protocol === 'reality';
+  const stack = inboundStack(data);
+  const dedicated = stack.listener === 'dedicated';
+  const transportLabel = { raw: 'Raw TCP', xhttp: 'XHTTP', ws: 'WebSocket' };
+  const select = (selection: InboundCombination) => {
+    update({
+      ...data,
+      protocol: selection.protocol,
+      transport: selection.transport,
+      security: selection.security,
+      listener: selection.listener,
+      path: selection.transport === 'raw' ? '' : data.path,
+      port: selection.listener === 'shared-https' ? 0 : data.port,
+    });
+  };
   return (
     <div className="grid gap-4">
       <TextField
         label={t('catalogue.remark')}
         value={data.remark}
-        error={!data.remark.trim() ? t('console.requiredField') : ''}
+        error={errors.remark ?? ''}
         onChange={(e) => update({ ...data, remark: e.target.value })}
       />
-      <SelectField
-        label={t('nodes.protocol')}
-        value={data.protocol}
-        options={Object.entries(protocols).map(([value, label]) => ({ value, label }))}
-        onValueChange={(value) => {
-          const protocol = value as ManagedInbound['protocol'];
-          update({ ...data, protocol, port: 0 });
-        }}
-      />
-      <TextField
-        label={t('catalogue.path')}
-        value={data.path}
-        error={!data.path.startsWith('/') ? t('console.pathError') : ''}
-        onChange={(e) => update({ ...data, path: e.target.value })}
-      />
+      {combinations?.length ? (
+        <>
+          <SelectField
+            label={t('nodes.protocol')}
+            value="vless"
+            options={[{ value: 'vless', label: 'VLESS' }]}
+          />
+          <SelectField
+            label={t('catalogue.transport')}
+            value={stack.transport}
+            error={errors.transport ?? ''}
+            options={[...new Set(combinations.map((item) => item.transport))].map((value) => ({
+              value,
+              label: transportLabel[value],
+            }))}
+            onValueChange={(value) => {
+              const changes = combinations.filter((item) => item.transport === value);
+              const next = changes.find((item) => item.security === stack.security) ?? changes[0];
+              if (next) select(next);
+            }}
+          />
+          <SelectField
+            label={t('catalogue.security')}
+            value={stack.security}
+            options={combinations
+              .filter((item) => item.transport === stack.transport)
+              .map(({ security }) => ({
+                value: security,
+                label: security === 'tls' ? 'TLS' : 'REALITY',
+              }))}
+            onValueChange={(security) => {
+              const next = combinations.find(
+                (item) => item.transport === stack.transport && item.security === security,
+              );
+              if (next) select(next);
+            }}
+          />
+          <SelectField
+            label={t('catalogue.listener')}
+            value={stack.listener}
+            options={[
+              {
+                value: stack.listener,
+                label: t(dedicated ? 'catalogue.dedicated' : 'catalogue.sharedHttps'),
+              },
+            ]}
+          />
+        </>
+      ) : (
+        <SelectField
+          label={t('nodes.protocol')}
+          value={data.protocol}
+          options={Object.entries(protocols).map(([value, label]) => ({ value, label }))}
+          onValueChange={(value) => {
+            if (value === 'reality' || value === 'ws' || value === 'xhttp')
+              update({ ...data, protocol: value, port: 0 });
+          }}
+        />
+      )}
+      {stack.transport !== 'raw' && (
+        <TextField
+          label={t('catalogue.path')}
+          hint={t(dedicated ? 'catalogue.dedicatedPathHint' : 'catalogue.sharedPathHint')}
+          value={data.path}
+          error={errors.path ?? ''}
+          onChange={(e) => update({ ...data, path: e.target.value })}
+        />
+      )}
       <TextField
         label={t('catalogue.port')}
-        disabled={!reality}
-        value={String(reality ? data.port : httpsPort)}
-        error={
-          reality && (!Number.isInteger(data.port) || data.port < 1 || data.port > 65535)
-            ? t('console.portError')
-            : ''
-        }
+        disabled={!dedicated}
+        hint={t(dedicated ? 'catalogue.independentPortHint' : 'catalogue.inheritedPortHint')}
+        value={String(dedicated ? data.port : httpsPort)}
+        error={errors.port ?? ''}
         onChange={(e) => update({ ...data, port: Number(e.target.value) })}
       />
       <SwitchField

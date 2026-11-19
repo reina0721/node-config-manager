@@ -49,7 +49,11 @@ export default function VersionPanel({
             description={error}
           />
         ) : null}
-        {compareVersions(minimum, 'v0.8.0') >= 0 ? (
+        {compareVersions(minimum, 'v0.8.2') >= 0 ? (
+          <p className="text-sm text-ink-muted">
+            {t('operations.snapshotVersion')} {minimum}
+          </p>
+        ) : compareVersions(minimum, 'v0.8.0') >= 0 ? (
           <p className="text-sm text-ink-muted">{t('operations.managementVersion')}</p>
         ) : data?.proxy_access_enabled ? (
           <p className="text-sm text-ink-muted">{t('operations.authVersion')}</p>
@@ -88,7 +92,7 @@ export default function VersionPanel({
           </div>
         ) : null}
         <TextField
-          label={t('operations.upgradeVersion')}
+          label={t('operations.upgradeVersion') + ' (' + minimum + '+)'}
           value={version}
           error={
             version && (!valid || compareVersions(version, minimum) < 0)

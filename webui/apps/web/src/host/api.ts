@@ -17,6 +17,8 @@ import {
   jobSchema,
   jobResultSchema,
   serviceSchema,
+  adminFieldErrorSchema,
+  type AdminFieldError,
   type NodeManagementPort,
   type ClientExportFormat,
   type ManagedJob,
@@ -28,6 +30,7 @@ export class ApiError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    readonly fields: readonly AdminFieldError[] = [],
   ) {
     super(message);
   }
@@ -73,7 +76,13 @@ export function createAdminApi(
         );
       }
       if (!response.ok) {
-        const error = z.object({ error: z.string(), message: z.string() }).safeParse(value);
+        const error = z
+          .object({
+            error: z.string(),
+            message: z.string(),
+            field_errors: z.array(adminFieldErrorSchema).optional(),
+          })
+          .safeParse(value);
         if (response.status === 401) {
           csrf = '';
           onUnauthorized();
@@ -81,6 +90,7 @@ export function createAdminApi(
         throw new ApiError(
           error.success ? error.data.error : 'request_failed',
           error.success ? error.data.message : 'API 请求失败',
+          error.success ? error.data.field_errors : undefined,
         );
       }
       return schema.parse(value);
@@ -112,7 +122,7 @@ export function createAdminApi(
         if (job.ok !== true)
           throw new ApiError(
             job.result?.error ?? 'operation_failed',
-            job.result?.message ?? '操作失败，请检查事务和依赖状态。',
+            job.result?.hint ?? job.result?.message ?? '操作失败，请检查事务和依赖状态。',
           );
         return job.result ?? jobResultSchema.parse({});
       }

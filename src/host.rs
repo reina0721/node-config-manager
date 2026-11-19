@@ -327,31 +327,32 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
         !crate::catalogue::requires_access(&c) || crate::proxy_access::enabled(store)?,
         "managed_inbounds_require_proxy_access"
     );
-    let reality = |config: &Config| {
+    let dedicated_ports = |config: &Config| {
         config
             .management
             .iter()
             .flat_map(|m| m.active_inbounds())
-            .filter(|(_, inbound)| inbound.protocol == crate::catalogue::Protocol::Reality)
+            .filter(|(_, inbound)| inbound.dedicated())
             .map(|(_, inbound)| inbound.port)
             .collect::<BTreeSet<_>>()
     };
-    let candidate_ports = reality(&c);
+    let candidate_ports = dedicated_ports(&c);
     if !candidate_ports.is_empty() {
         let current = store
             .pointer("current")?
             .map(|id| store.verify(&id))
             .transpose()?;
-        let active_reality_ports = current
+        let active_dedicated_ports = current
             .as_ref()
-            .map(|(config, _)| reality(config))
+            .map(|(config, _)| dedicated_ports(config))
             .unwrap_or_default();
-        for &port in candidate_ports.difference(&active_reality_ports) {
-            TcpListener::bind(("0.0.0.0", port))
-                .context("Managed REALITY port is already occupied")?;
-            if !c.node.ipv6.is_empty() {
-                TcpListener::bind(("::", port))
-                    .context("Managed REALITY IPv6 port is already occupied")?;
+        for &port in candidate_ports.difference(&active_dedicated_ports) {
+            let addresses = ["0.0.0.0", "::"];
+            let count = if c.node.ipv6.is_empty() { 1 } else { 2 };
+            for address in &addresses[..count] {
+                TcpListener::bind((*address, port)).with_context(|| {
+                    format!("Cannot bind managed inbound TCP port {port} on {address}")
+                })?;
             }
         }
     }
@@ -359,7 +360,7 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
         .into_iter()
         .chain(
             managed()
-                .filter(|(_, inbound)| inbound.protocol != crate::catalogue::Protocol::Reality)
+                .filter(|(_, inbound)| !inbound.dedicated())
                 .map(|(_, inbound)| &inbound.path),
         )
     {
@@ -396,7 +397,10 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
         .prefix("nodectl-check-")
         .tempdir_in("/run")?;
     let candidate = tmp.path().join("xray.json");
-    store::atomic_write(&candidate, &fs::read(release.join("xray.json"))?)?;
+    let mut xray: serde_json::Value =
+        serde_json::from_slice(&fs::read(release.join("xray.json"))?)?;
+    crate::catalogue::materialize_tls(&c, &mut xray)?;
+    store::atomic_write(&candidate, &serde_json::to_vec(&xray)?)?;
     command(
         "chown",
         &[
@@ -2101,6 +2105,15 @@ pub fn renew(store: &Store) -> Result<()> {
         &["-t", "-c", path(&store.release(&id)?.join("nginx.conf"))?],
     )?;
     command("systemctl", &["reload", "nginx"])?;
+    let uses_raw_tls = c
+        .management
+        .iter()
+        .flat_map(|m| m.active_inbounds())
+        .any(|(_, inbound)| {
+            inbound.stack().transport == crate::catalogue::Transport::Raw
+                && inbound.stack().security == crate::catalogue::Security::Tls
+        });
+    let mut reload_xray = false;
     // Refresh certificates in the receipt so a later rollback can still check
     // binaries against their original pins after legitimate renewal.
     for release in [Some(id.clone()), store.pointer("previous")?]
@@ -2125,10 +2138,16 @@ pub fn renew(store: &Store) -> Result<()> {
         let new = dependencies(&config, &r.reference)?;
         for (file, hash) in new {
             if file.ends_with("/fullchain.pem") || file.ends_with("/privkey.pem") {
+                reload_xray |=
+                    uses_raw_tls && release == id && r.dependencies.get(&file) != Some(&hash);
                 r.dependencies.insert(file, hash);
             }
         }
         store::atomic_write(&p, &serde_json::to_vec_pretty(&r)?)?;
+    }
+    if reload_xray {
+        command("systemctl", &["restart", "xray"])?;
+        verify_live_success(store, &id)?;
     }
     crate::admin_install::renew_if_installed(&c)?;
     Ok(())

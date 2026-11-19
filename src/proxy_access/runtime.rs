@@ -258,6 +258,7 @@ pub fn prepare(store: &Store) -> Result<()> {
         "Proxy access state disabled while service override is installed"
     );
     let mut json: Value = serde_json::from_slice(&fs::read(source)?)?;
+    crate::catalogue::materialize_tls(&config, &mut json)?;
     let pin = RelayIdentity::load(store)?.pin()?;
     let probes = config
         .management
@@ -323,9 +324,8 @@ pub(super) fn managed_tags(config: &Config) -> BTreeMap<String, uuid::Uuid> {
         .flat_map(|catalogue| catalogue.active_inbounds())
         .flat_map(|(id, inbound)| {
             [(crate::catalogue::tag(id), id)].into_iter().chain(
-                (inbound.protocol == crate::catalogue::Protocol::Reality
-                    && !config.node.ipv6.is_empty())
-                .then(|| (crate::catalogue::ipv6_tag(id), id)),
+                (inbound.dedicated() && !config.node.ipv6.is_empty())
+                    .then(|| (crate::catalogue::ipv6_tag(id), id)),
             )
         })
         .collect()
@@ -387,6 +387,14 @@ pub(super) fn overlay(
             .as_str()
             .context("Missing Xray inbound tag")?;
         let managed_id = managed.get(tag);
+        let managed_inbound = managed_id.and_then(|id| {
+            config
+                .management
+                .as_ref()?
+                .inbounds
+                .get(id)
+                .map(|inbound| (*id, inbound))
+        });
         ensure!(
             (PUBLIC_TAGS.contains(&tag) || managed_id.is_some()) && inbound["protocol"] == "vless",
             "Unexpected Xray inbound"
@@ -397,7 +405,10 @@ pub(super) fn overlay(
             original["id"].is_string(),
             "Missing Xray VLESS client template"
         );
-        let client = |id: uuid::Uuid, email: &str| {
+        let client = |device: uuid::Uuid, email: &str| {
+            let id = managed_inbound.map_or(device, |(id, inbound)| {
+                crate::catalogue::inbound_user(id, inbound, device)
+            });
             let mut entry = original.clone();
             entry["id"] = json!(id);
             entry["email"] = json!(email);

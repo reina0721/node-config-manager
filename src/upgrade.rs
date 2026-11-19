@@ -18,6 +18,7 @@ const TIME_LIMIT: u64 = 30 * 60;
 const WEB_MINIMUM: [u64; 3] = [0, 6, 5];
 const ACCESS_MINIMUM: [u64; 3] = [0, 7, 1];
 const MANAGEMENT_MINIMUM: [u64; 3] = [0, 8, 0];
+const TRANSPORT_MINIMUM: [u64; 3] = [0, 8, 2];
 
 #[derive(Serialize, Deserialize)]
 struct Switch {
@@ -87,25 +88,39 @@ fn validate_compatibility(store: &Store, version: [u64; 3]) -> Result<()> {
         version >= ACCESS_MINIMUM || !proxy_access::enabled(store)?,
         "version_auth_incompatible"
     );
-    ensure!(
-        version >= MANAGEMENT_MINIMUM || !requires_management_version(store)?,
-        "version_management_incompatible"
-    );
+    if version < TRANSPORT_MINIMUM {
+        let minimum = snapshot_minimum(store)?;
+        ensure!(
+            version >= minimum,
+            if minimum >= TRANSPORT_MINIMUM {
+                "version_snapshot_incompatible"
+            } else {
+                "version_management_incompatible"
+            }
+        );
+    }
     Ok(())
 }
 
-fn requires_management_version(store: &Store) -> Result<bool> {
-    if proxy_access::has_account_policies(store)? || crate::fleet::has_records(store)? {
-        return Ok(true);
-    }
+fn snapshot_minimum(store: &Store) -> Result<[u64; 3]> {
+    let mut minimum =
+        if proxy_access::has_account_policies(store)? || crate::fleet::has_records(store)? {
+            MANAGEMENT_MINIMUM
+        } else {
+            WEB_MINIMUM
+        };
     for pointer in ["current", "previous"] {
-        if let Some(id) = store.pointer(pointer)?
-            && store.verify(&id)?.0.management.is_some()
-        {
-            return Ok(true);
+        if let Some(id) = store.pointer(pointer)? {
+            let (config, _, manifest) = store.verify_with_manifest(&id)?;
+            let generator = stable_version(&manifest.generator_version)?;
+            if generator >= TRANSPORT_MINIMUM {
+                minimum = minimum.max(generator);
+            } else if config.management.is_some() {
+                minimum = minimum.max(MANAGEMENT_MINIMUM);
+            }
         }
     }
-    Ok(false)
+    Ok(minimum)
 }
 
 #[derive(Deserialize)]
@@ -176,13 +191,11 @@ pub fn versions(store: &Store) -> Result<Value> {
     let running = format!("v{}", env!("CARGO_PKG_VERSION"));
     let releases = available();
     let proxy_access = proxy_access::enabled(store)?;
-    let minimum = if requires_management_version(store)? {
-        MANAGEMENT_MINIMUM
-    } else if proxy_access {
+    let minimum = snapshot_minimum(store)?.max(if proxy_access {
         ACCESS_MINIMUM
     } else {
         WEB_MINIMUM
-    };
+    });
     Ok(json!({
         "running":running,
         "lookup_failed":releases.is_err(),

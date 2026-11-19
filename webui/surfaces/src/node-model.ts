@@ -1,11 +1,36 @@
 import { z } from 'zod';
 
 const toggle = z.object({ enabled: z.boolean() }).strict();
-const inboundProtocol = z.enum(['xhttp', 'ws', 'reality']);
+const transportSchema = z.enum(['xhttp', 'ws', 'raw']);
+const securitySchema = z.enum(['tls', 'reality']);
+const listenerSchema = z.enum(['shared-https', 'dedicated']);
+const inboundProtocol = z.enum(['xhttp', 'ws', 'reality', 'vless']);
+const inboundCapabilitiesSchema = z.object({
+  combinations: z.array(
+    z.object({
+      protocol: z.literal('vless'),
+      transport: transportSchema,
+      security: securitySchema,
+      listener: listenerSchema,
+      runtime: z.string(),
+      formats: z.array(z.enum(['xray', 'mihomo'])),
+    }),
+  ),
+});
+export type InboundCombination = z.infer<typeof inboundCapabilitiesSchema>['combinations'][number];
+export const adminFieldErrorSchema = z.object({
+  field: z.string(),
+  code: z.string(),
+  message: z.string(),
+});
+export type AdminFieldError = z.infer<typeof adminFieldErrorSchema>;
 const managedInboundSchema = z
   .object({
     remark: z.string(),
     protocol: inboundProtocol,
+    transport: transportSchema.optional(),
+    security: securitySchema.optional(),
+    listener: listenerSchema.optional(),
     path: z.string(),
     port: z.number().int(),
     enabled: z.boolean(),
@@ -280,6 +305,7 @@ export const configurationViewSchema = z.object({
   assets: z.array(z.string()),
   base: z.string(),
   safe_mode: z.boolean(),
+  inbound_capabilities: inboundCapabilitiesSchema.optional(),
 });
 export type ConfigurationView = z.infer<typeof configurationViewSchema>;
 export const nodesViewSchema = z.object({
@@ -357,6 +383,8 @@ export const deploymentViewSchema = z.object({
 export const jobResultSchema = z.object({
   message: z.string().optional(),
   error: z.string().optional(),
+  failed_stage: z.string().optional(),
+  hint: z.string().optional(),
   token: z.string().optional(),
   log: z.string().optional(),
   checked: z.boolean().optional(),

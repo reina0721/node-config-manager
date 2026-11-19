@@ -230,6 +230,9 @@ impl Store {
         Ok(id)
     }
     pub fn verify(&self, id: &str) -> Result<(Config, Secrets)> {
+        self.verify_with_manifest(id).map(|(c, s, _)| (c, s))
+    }
+    pub fn verify_with_manifest(&self, id: &str) -> Result<(Config, Secrets, Manifest)> {
         let path = self.release(id)?;
         check_private(&self.state_dir, true)?;
         check_private(&self.state_dir.join("releases"), true)?;
@@ -255,7 +258,8 @@ impl Store {
                         && (manifest.generator_version == env!("CARGO_PKG_VERSION")
                             || [
                                 "0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "0.6.4",
-                                "0.6.5", "0.7.0", "0.7.1", "0.7.2", "0.7.3", "0.7.4", "0.8.0"
+                                "0.6.5", "0.7.0", "0.7.1", "0.7.2", "0.7.3", "0.7.4", "0.8.0",
+                                "0.8.1"
                             ]
                             .contains(&manifest.generator_version.as_str())))),
             "Release requires its original nodectl/template version"
@@ -264,7 +268,7 @@ impl Store {
         let (c, s) = config::load(&path.join("source"))?;
         ensure!(
             manifest.generator_version == env!("CARGO_PKG_VERSION")
-                || manifest.generator_version == "0.8.0"
+                || ["0.8.0", "0.8.1"].contains(&manifest.generator_version.as_str())
                 || c.management.is_none(),
             "Historical release contains unsupported management fields"
         );
@@ -318,7 +322,7 @@ impl Store {
             .collect();
         listed.sort();
         ensure!(actual == listed, "Untracked files in release");
-        Ok((c, s))
+        Ok((c, s, manifest))
     }
     pub fn pointer(&self, name: &str) -> Result<Option<String>> {
         ensure!(["current", "previous"].contains(&name), "Invalid pointer");

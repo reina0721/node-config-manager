@@ -370,6 +370,16 @@
         "enabled": {
           "type": "boolean"
         },
+        "listener": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Listener"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "path": {
           "type": "string"
         },
@@ -383,6 +393,26 @@
         },
         "remark": {
           "type": "string"
+        },
+        "security": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Security"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Transport2"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -395,6 +425,13 @@
         "ipv6",
         "ipv4-prefer",
         "ipv6-prefer"
+      ]
+    },
+    "Listener": {
+      "type": "string",
+      "enum": [
+        "shared-https",
+        "dedicated"
       ]
     },
     "Network": {
@@ -466,7 +503,8 @@
       "enum": [
         "xhttp",
         "ws",
-        "reality"
+        "reality",
+        "vless"
       ]
     },
     "Protocol2": {
@@ -599,6 +637,13 @@
       },
       "additionalProperties": false
     },
+    "Security": {
+      "type": "string",
+      "enum": [
+        "tls",
+        "reality"
+      ]
+    },
     "Tls": {
       "type": "object",
       "required": [
@@ -655,6 +700,14 @@
         }
       },
       "additionalProperties": false
+    },
+    "Transport2": {
+      "type": "string",
+      "enum": [
+        "raw",
+        "xhttp",
+        "ws"
+      ]
     },
     "Upstream": {
       "type": "object",

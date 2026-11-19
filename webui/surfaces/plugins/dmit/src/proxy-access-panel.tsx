@@ -375,6 +375,11 @@ function UserEditor({
   const [device, setDevice] = useState('');
   const count = Number(limit ?? user?.device_limit ?? 1);
   const valid = Number.isInteger(count) && count >= 1 && count <= 32;
+  const usernameValid = Boolean(user) || /^[a-zA-Z0-9._@-]{1,64}$/.test(username.trim());
+  const passwordBytes = new TextEncoder().encode(password).length;
+  const passwordValid =
+    (Boolean(user) && !password) || (passwordBytes >= 6 && passwordBytes <= 256);
+  const canSave = valid && usernameValid && passwordValid;
   return (
     <div className="grid gap-3">
       <h3 className="font-semibold">{t('console.devicesTab')}</h3>
@@ -382,6 +387,7 @@ function UserEditor({
         <TextField
           label={t('access.username')}
           value={username}
+          error={username && !usernameValid ? t('console.usernameError') : ''}
           onChange={(e) => {
             setUsername(e.target.value);
             onProfileDirty(true);
@@ -394,6 +400,7 @@ function UserEditor({
         showLabel={t('common.show')}
         hideLabel={t('common.hide')}
         value={password}
+        error={password && !passwordValid ? t('console.passwordError') : ''}
         onChange={(e) => {
           setPassword(e.target.value);
           onProfileDirty(true);
@@ -411,7 +418,7 @@ function UserEditor({
       <div className="flex flex-wrap gap-3">
         <Action
           loading={busy}
-          disabled={busy || !valid || (!user && (!username.trim() || !password))}
+          disabled={busy || !canSave}
           onPress={() => {
             const action: ProxyAccessChange = user
               ? {
@@ -439,7 +446,7 @@ function UserEditor({
         {!user ? (
           <Action
             variant="secondary"
-            disabled={busy || queueFull || !valid || !username.trim() || !password}
+            disabled={busy || queueFull || !canSave}
             onPress={() => {
               queue({ username: username.trim(), password, device_limit: count });
               setPassword('');
@@ -491,27 +498,19 @@ function UserEditor({
               {t('access.createDevice')}
             </Action>
           </div>
-          <DataTable
-            label={t('access.devices')}
-            rows={user.devices}
-            emptyContent={t('access.noDevices')}
-            columns={[
-              {
-                id: 'device',
-                label: t('access.deviceName'),
-                rowHeader: true,
-                render: (row) => row.label,
-              },
-              {
-                id: 'expiry',
-                label: t('access.expiry'),
-                render: (row) =>
-                  row.expires ? <Timestamp value={row.expires} /> : t('access.signedOut'),
-              },
-              {
-                id: 'actions',
-                label: t('access.actions'),
-                render: (row) => (
+          {user.devices.length ? (
+            <ul className="grid gap-3" aria-label={t('access.devices')}>
+              {user.devices.map((row) => (
+                <li
+                  key={row.id}
+                  className="grid min-w-0 gap-3 rounded-panel border border-border p-3"
+                >
+                  <div className="grid gap-1">
+                    <h4 className="break-words font-semibold">{row.label}</h4>
+                    <p className="text-sm text-ink-muted">
+                      {row.expires ? <Timestamp value={row.expires} /> : t('access.signedOut')}
+                    </p>
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     <Action
                       variant="secondary"
@@ -551,10 +550,12 @@ function UserEditor({
                       {t('access.deleteDevice')}
                     </Action>
                   </div>
-                ),
-              },
-            ]}
-          />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-ink-muted">{t('access.noDevices')}</p>
+          )}
         </>
       ) : null}
     </div>

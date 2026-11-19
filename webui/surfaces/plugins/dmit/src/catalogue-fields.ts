@@ -1,8 +1,126 @@
+import type {
+  InboundCombination,
+  ManagedInbound,
+  NodeConfiguration,
+} from '../../../src/node-management';
+
+type InboundStack = Pick<InboundCombination, 'transport' | 'security' | 'listener'>;
+
 export const protocols = {
   xhttp: 'VLESS XHTTP',
   ws: 'VLESS WebSocket',
   reality: 'VLESS REALITY',
 } as const;
+
+const legacyStacks = {
+  xhttp: { transport: 'xhttp', security: 'tls', listener: 'shared-https' },
+  ws: { transport: 'ws', security: 'tls', listener: 'shared-https' },
+  reality: { transport: 'xhttp', security: 'reality', listener: 'dedicated' },
+} as const satisfies Record<keyof typeof protocols, InboundStack>;
+
+export function inboundStack(inbound: ManagedInbound | keyof typeof protocols): InboundStack {
+  if (typeof inbound === 'string') return legacyStacks[inbound];
+  if (inbound.protocol !== 'vless') return legacyStacks[inbound.protocol];
+  return {
+    transport: inbound.transport ?? 'xhttp',
+    security: inbound.security ?? 'tls',
+    listener: inbound.listener ?? 'shared-https',
+  };
+}
+
+export function inboundLabel(inbound: ManagedInbound) {
+  const stack = inboundStack(inbound);
+  const transport = { raw: 'Raw TCP', xhttp: 'XHTTP', ws: 'WebSocket' }[stack.transport];
+  return ['VLESS', transport, stack.security === 'tls' ? 'TLS' : 'REALITY'].join(' · ');
+}
+
+export function inboundErrors(
+  inbound: ManagedInbound,
+  config: NodeConfiguration,
+  id: string | null,
+) {
+  const stack = inboundStack(inbound);
+  const errors: Partial<Record<'remark' | 'path' | 'port', string>> = {};
+  if (
+    !inbound.remark.trim() ||
+    new TextEncoder().encode(inbound.remark).length > 120 ||
+    /\p{Cc}/u.test(inbound.remark)
+  )
+    errors.remark = 'catalogue.remarkError';
+  const others = Object.entries(config.management?.inbounds ?? {}).filter(
+    ([other]) => other !== id,
+  );
+  if (stack.listener === 'dedicated') {
+    const reserved = [
+      config.ports.http,
+      config.ports.https,
+      config.ports.reality,
+      22,
+      9080,
+      9443,
+      19081,
+      19443,
+      config.web_services?.librespeed_port,
+      config.web_services?.openlist_port,
+      ...others
+        .filter(([, entry]) => inboundStack(entry).listener === 'dedicated')
+        .map(([, entry]) => entry.port),
+    ];
+    if (!Number.isInteger(inbound.port) || inbound.port < 1024 || inbound.port > 65535) {
+      errors.port = 'catalogue.independentPortError';
+    } else if (reserved.includes(inbound.port)) {
+      errors.port = 'catalogue.portConflict';
+    }
+  }
+  if (
+    stack.transport === 'raw' ||
+    (stack.listener === 'dedicated' && inbound.protocol === 'vless' && inbound.path === '/')
+  )
+    return errors;
+  const location = inbound.path;
+  if (
+    !location.startsWith('/') ||
+    location.length > 256 ||
+    !/^[a-z0-9/_.-]+$/i.test(location) ||
+    location.includes('//') ||
+    location.split('/').filter(Boolean).length < 2 ||
+    location.split('/').some((part) => part === '.' || part === '..') ||
+    /vless|xhttp|splithttp|websocket|reality/i.test(location) ||
+    (stack.transport === 'xhttp' && !location.endsWith('/'))
+  ) {
+    errors.path = 'catalogue.managedPathError';
+  } else if (stack.listener === 'shared-https' || inbound.protocol !== 'vless') {
+    const actual = location.replace(/\/+$/, '');
+    const reserved = [
+      config.transport.xhttp.path,
+      config.transport.ws.path,
+      config.transport.reality.path,
+      ...config.website.reserved_paths,
+      '/nodes/',
+      '/librespeed/',
+      '/downloads/',
+      '/admin/',
+      '/.well-known/',
+      ...others
+        .filter(
+          ([, entry]) =>
+            inboundStack(entry).listener === 'shared-https' || entry.protocol !== 'vless',
+        )
+        .map(([, entry]) => entry.path),
+    ];
+    if (
+      reserved
+        .map((path) => path.replace(/\/+$/, ''))
+        .some(
+          (path) =>
+            path === actual || path.startsWith(actual + '/') || actual.startsWith(path + '/'),
+        )
+    ) {
+      errors.path = 'catalogue.pathConflict';
+    }
+  }
+  return errors;
+}
 
 export function split(value: string) {
   return value

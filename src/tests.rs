@@ -698,6 +698,9 @@ fn catalogue_validation_and_device_exports_preserve_builtins_and_group_scope() -
             path: "/additional/ingress".into(),
             port: 0,
             enabled: true,
+            transport: None,
+            security: None,
+            listener: None,
         },
     );
     catalogue.hosts.insert(

@@ -11,10 +11,12 @@ import { Details, Code, useNodeText } from './common';
 export default function PlanReview({
   plan,
   onApplied,
+  onBack,
   initialManualCertificates = true,
 }: Readonly<{
   plan: ConfigPlan;
   onApplied: () => Promise<void>;
+  onBack?: () => void;
   initialManualCertificates?: boolean;
 }>) {
   const api = useNodeManagement();
@@ -52,7 +54,17 @@ export default function PlanReview({
       ) : null}
       {plan ? (
         <>
-          <Section title={t('config.review')} description={plan.risk}>
+          <Section
+            title={t('config.review')}
+            description={plan.risk}
+            action={
+              onBack && (
+                <Action variant="secondary" disabled={pending} onPress={onBack}>
+                  {t('catalogue.backToEdit')}
+                </Action>
+              )
+            }
+          >
             <div className="grid gap-4 p-5">
               <ol
                 className="flex flex-wrap items-center gap-3"

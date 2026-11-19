@@ -356,6 +356,13 @@ async fn handle(
                 | "not_found"
                 | "method_not_allowed"
                 | "bad_request"
+                | "invalid_inbound_stack"
+                | "invalid_inbound_remark"
+                | "invalid_inbound_path"
+                | "inbound_path_conflict"
+                | "invalid_inbound_port"
+                | "inbound_port_conflict"
+                | "invalid_host_path"
                 | "invalid_proxy_ttl"
                 | "invalid_proxy_username"
                 | "invalid_proxy_password"
@@ -371,6 +378,7 @@ async fn handle(
                 | "proxy_user_exists"
                 | "version_switch_pending"
                 | "version_auth_incompatible"
+                | "version_snapshot_incompatible"
                 | "version_management_incompatible" => error.as_str(),
                 _ => "operation_failed",
             };
@@ -390,11 +398,23 @@ async fn handle(
                 "stale_plan" | "operation_busy" | "check_required" => 409,
                 _ => 400,
             };
-            (
-                StatusCode::from_u16(status).unwrap(),
-                Json(json!({"error":code,"message":remedy(code)})),
-            )
-                .into_response()
+            let mut payload = json!({"error":code,"message":remedy(code)});
+            if let Some(field) = match code {
+                "invalid_inbound_stack" => Some("transport"),
+                "invalid_inbound_remark" => Some("remark"),
+                "invalid_inbound_path" | "inbound_path_conflict" | "invalid_host_path" => {
+                    Some("path")
+                }
+                "invalid_inbound_port" | "inbound_port_conflict" => Some("port"),
+                "invalid_proxy_username" | "proxy_user_exists" => Some("username"),
+                "invalid_proxy_password" => Some("password"),
+                "invalid_proxy_device_limit" => Some("device_limit"),
+                _ => None,
+            } {
+                payload["field_errors"] =
+                    json!([{"field":field, "code":code, "message":remedy(code)}]);
+            }
+            (StatusCode::from_u16(status).unwrap(), Json(payload)).into_response()
         }
     };
     for (k, v) in [
@@ -416,6 +436,13 @@ async fn handle(
 }
 fn remedy(code: &str) -> &str {
     match code {
+        "invalid_inbound_stack" => "请选择核心支持的传输、安全层和监听组合。",
+        "invalid_inbound_remark" => "入站备注不能为空，最长 120 字节。",
+        "invalid_inbound_path" => "请按传输类型填写有效路径。Raw TCP 无需填写路径。",
+        "inbound_path_conflict" => "传输路径和已有入口、站点或保留路径重叠。",
+        "invalid_inbound_port" => "独立监听需使用 1024–65535；共享监听使用现有 HTTPS 端口。",
+        "inbound_port_conflict" => "此端口已分配给节点或保留服务，请换一个端口。",
+        "invalid_host_path" => "附加主机的路径与入站传输不兼容。",
         "invalid_proxy_ttl" => "认证有效期应为一分钟到九十天。",
         "invalid_proxy_username" => "用户名应为 1–64 个字母、数字或 ._ - @ 字符。",
         "invalid_proxy_password" => "密码长度应为 6–256 字节。",
@@ -431,6 +458,9 @@ fn remedy(code: &str) -> &str {
         "proxy_user_exists" => "用户名重复或已经存在。",
         "version_switch_pending" => "正在切换 nodectl 版本，请稍候。",
         "version_auth_incompatible" => "启用浏览器认证时可切换到 v0.7.1 或更高版本。",
+        "version_snapshot_incompatible" => {
+            "目标版本无法读取当前或上一版本的节点快照。请使用运维中心显示的版本下限。"
+        }
         "version_management_incompatible" => "目标版本无法执行当前账号限制或读取管理配置快照。",
         "unauthorized" => "会话失效或 Token 不正确，请重新登录。",
         "reauth_denied" => "管理员 Token 重新认证失败，请检查后重试；当前会话仍有效。",
@@ -599,7 +629,7 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
             "openapi" => crate::admin_docs::openapi(),
             "config" => {
                 let (c, _) = app.store.inputs()?;
-                json!({"config":c,"assets":policy::ASSETS,"base":policy::fingerprint(&app.store)?,"safe_mode":true})
+                json!({"config":c,"assets":policy::ASSETS,"base":policy::fingerprint(&app.store)?,"safe_mode":true,"inbound_capabilities":crate::catalogue::inbound_capabilities()})
             }
             "nodes" => read::nodes(&app.store)?,
             "proxy-access" => crate::proxy_access::list(&app.store)?,
@@ -1173,8 +1203,18 @@ impl App {
         std::thread::spawn(move || {
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&app, &job)));
-            let (ok, value) = match result {
+            let (ok, mut value) = match result {
                 Ok(Ok(v)) => (true, v),
+                Ok(Err(error))
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::AddrInUse) =>
+                {
+                    (
+                        false,
+                        json!({"error":"inbound_port_occupied","message":"系统中已有服务监听该端口，请返回入站表单更换端口。"}),
+                    )
+                }
                 _ => (
                     false,
                     json!({"error":"operation_failed","message":remedy("operation_failed")}),
@@ -1182,6 +1222,26 @@ impl App {
             };
             let _ = app.audit(&op, if ok { "success" } else { "failed" }, Some(&job));
             if let Some(j) = app.jobs.lock().unwrap().get_mut(&job) {
+                if !ok {
+                    let stage = match j.phase.as_str() {
+                        "check-dns" => Some(("dns", "核对当前域名和证书对应的 A / AAAA 记录。")),
+                        "check-environment" => Some(("check", "检查端口占用、证书、配置和依赖。")),
+                        "snapshot" => Some(("snapshot", "检查状态目录的剩余空间和备份权限。")),
+                        "apply" => {
+                            Some(("apply", "检查服务启动和客户端握手结果，再确认恢复状态。"))
+                        }
+                        "recover-inputs" => {
+                            Some(("recovery", "检查事务状态。确认前请保留现有恢复快照。"))
+                        }
+                        _ => None,
+                    };
+                    if let Some((stage, hint)) = stage {
+                        value["failed_stage"] = json!(stage);
+                        if value["error"] == "operation_failed" {
+                            value["hint"] = json!(hint);
+                        }
+                    }
+                }
                 j.finished = Some(auth::now());
                 j.ok = Some(ok);
                 j.phase = if ok { "completed" } else { "failed" }.into();
@@ -1235,8 +1295,9 @@ impl App {
                 target.checked = false;
                 target.deployment = None;
             }
-            self.phase(job, "check");
+            self.phase(job, "check-dns");
             crate::dns::verify(&plan.candidate)?;
+            self.phase(job, "check-environment");
             host::check(&self.store, &plan.release, self.reference()?)?;
             self.plans
                 .lock()
@@ -1248,6 +1309,7 @@ impl App {
             return Ok(json!({"plan":plan.id,"checked":true}));
         }
         ensure!(plan.checked, "check_required");
+        self.phase(job, "check-dns");
         crate::dns::verify(&plan.candidate)?;
         self.phase(job, "snapshot");
         let journal = policy::InputJournal {
@@ -1277,6 +1339,7 @@ impl App {
         let result = host::apply(&self.store, &plan.release);
         self.phase(job, "recover-inputs");
         policy::recover_inputs(&self.store)?;
+        self.phase(job, "apply");
         result?;
         self.plans.lock().unwrap().remove(&plan.id);
         Ok(json!({"release":plan.release,"backup":plan.id,"restorable":true}))

@@ -31,32 +31,96 @@ pub struct Catalogue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
+    // Stored identifiers from historical snapshots.
     Xhttp,
     Ws,
     Reality,
+    Vless,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    Raw,
+    Xhttp,
+    Ws,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Security {
+    Tls,
+    Reality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Listener {
+    SharedHttps,
+    Dedicated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Stack {
+    pub transport: Transport,
+    pub security: Security,
+    pub listener: Listener,
+}
+
+const SHARED_XHTTP: Stack = Stack {
+    transport: Transport::Xhttp,
+    security: Security::Tls,
+    listener: Listener::SharedHttps,
+};
+const SHARED_WS: Stack = Stack {
+    transport: Transport::Ws,
+    ..SHARED_XHTTP
+};
+const XHTTP_REALITY: Stack = Stack {
+    transport: Transport::Xhttp,
+    security: Security::Reality,
+    listener: Listener::Dedicated,
+};
+const RAW_REALITY: Stack = Stack {
+    transport: Transport::Raw,
+    ..XHTTP_REALITY
+};
+const RAW_TLS: Stack = Stack {
+    security: Security::Tls,
+    ..RAW_REALITY
+};
+const VLESS_STACKS: &[Stack] = &[SHARED_XHTTP, SHARED_WS, XHTTP_REALITY, RAW_TLS, RAW_REALITY];
+
+pub fn inbound_capabilities() -> Value {
+    json!({
+        "combinations":VLESS_STACKS.iter().map(|stack| json!({
+            "protocol":"vless",
+            "transport":stack.transport,
+            "security":stack.security,
+            "listener":stack.listener,
+            "runtime":"xray",
+            "formats":["xray","mihomo"]
+        })).collect::<Vec<_>>()
+    })
+}
+
+impl Stack {
+    fn template(self) -> &'static str {
+        match self.listener {
+            Listener::Dedicated => "reality",
+            Listener::SharedHttps if self.transport == Transport::Ws => "ws",
+            Listener::SharedHttps => "xhttp",
+        }
+    }
 }
 
 impl Protocol {
-    pub fn name(self) -> &'static str {
+    fn legacy(self) -> Option<Stack> {
         match self {
-            Self::Xhttp => "xhttp",
-            Self::Ws => "ws",
-            Self::Reality => "reality",
-        }
-    }
-
-    pub fn port(self, c: &Config) -> u16 {
-        match self {
-            Self::Reality => c.ports.reality,
-            _ => c.ports.https,
-        }
-    }
-
-    pub fn path(self, c: &Config) -> &str {
-        match self {
-            Self::Xhttp => &c.transport.xhttp.path,
-            Self::Ws => &c.transport.ws.path,
-            Self::Reality => &c.transport.reality.path,
+            Self::Xhttp => Some(SHARED_XHTTP),
+            Self::Ws => Some(SHARED_WS),
+            Self::Reality => Some(XHTTP_REALITY),
+            Self::Vless => None,
         }
     }
 }
@@ -69,11 +133,42 @@ pub struct Inbound {
     pub path: String,
     pub port: u16,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<Transport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<Security>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listener: Option<Listener>,
 }
 
 impl Inbound {
+    fn checked_stack(&self) -> Option<Stack> {
+        match (self.transport, self.security, self.listener) {
+            (None, None, None) => self.protocol.legacy(),
+            (Some(transport), Some(security), Some(listener))
+                if self.protocol == Protocol::Vless =>
+            {
+                let stack = Stack {
+                    transport,
+                    security,
+                    listener,
+                };
+                VLESS_STACKS.contains(&stack).then_some(stack)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn stack(&self) -> Stack {
+        self.checked_stack().expect("validated inbound transport")
+    }
+
+    pub fn dedicated(&self) -> bool {
+        self.stack().listener == Listener::Dedicated
+    }
+
     pub fn port(&self, c: &Config) -> u16 {
-        if self.protocol == Protocol::Reality {
+        if self.dedicated() {
             self.port
         } else {
             c.ports.https
@@ -229,18 +324,28 @@ pub enum Target<'a> {
     Managed(Uuid, &'a Inbound),
 }
 
-impl Target<'_> {
-    pub fn protocol(self) -> Protocol {
+impl<'a> Target<'a> {
+    pub fn stack(self) -> Stack {
         match self {
-            Self::Builtin(p) => p,
-            Self::Managed(_, inbound) => inbound.protocol,
+            Self::Builtin(protocol) => protocol.legacy().expect("built-in transport"),
+            Self::Managed(_, inbound) => inbound.stack(),
         }
     }
 
     pub fn port(self, c: &Config) -> u16 {
         match self {
-            Self::Builtin(p) => p.port(c),
+            Self::Builtin(Protocol::Reality) => c.ports.reality,
+            Self::Builtin(_) => c.ports.https,
             Self::Managed(_, inbound) => inbound.port(c),
+        }
+    }
+
+    fn path(self, c: &'a Config) -> &'a str {
+        match self {
+            Self::Builtin(Protocol::Ws) => &c.transport.ws.path,
+            Self::Builtin(Protocol::Reality) => &c.transport.reality.path,
+            Self::Builtin(_) => &c.transport.xhttp.path,
+            Self::Managed(_, inbound) => &inbound.path,
         }
     }
 
@@ -372,33 +477,40 @@ pub fn validate(c: &Config) -> Result<()> {
     for (&id, inbound) in &catalogue.inbounds {
         ensure!(
             !id.is_nil() && label(&inbound.remark, 120) && !inbound.remark.trim().is_empty(),
-            "Invalid inbound remark or identifier"
+            "invalid_inbound_remark"
         );
-        ensure!(
-            config::route(&inbound.path, inbound.protocol != Protocol::Ws)
-                && inbound.path.len() <= 256,
-            "Invalid managed transport path"
-        );
-        ensure!(
-            !paths
-                .iter()
-                .copied()
-                .chain(reserved)
-                .chain(c.website.reserved_paths.iter().map(String::as_str))
-                .any(|path| config::overlap(path, &inbound.path)),
-            "Managed transport path conflicts with another route"
-        );
-        paths.push(&inbound.path);
-        if inbound.protocol == Protocol::Reality {
-            ensure!(
-                inbound.port >= 1024 && ports.insert(inbound.port),
-                "Managed REALITY port conflicts with an existing listener"
-            );
+        let stack = inbound.checked_stack().context("invalid_inbound_stack")?;
+        if stack.transport == Transport::Raw {
+            ensure!(inbound.path.is_empty(), "invalid_inbound_path");
         } else {
+            let root = stack.listener == Listener::Dedicated
+                && inbound.protocol == Protocol::Vless
+                && inbound.path == "/";
             ensure!(
-                inbound.port == 0,
-                "XHTTP and WebSocket inherit the HTTPS port"
+                root || (config::route(&inbound.path, stack.transport != Transport::Ws)
+                    && inbound.path.len() <= 256),
+                "invalid_inbound_path"
             );
+            // Only shared Nginx locations compete with website and sibling paths.
+            // Keep the historical validation for previously stored entries.
+            if stack.listener == Listener::SharedHttps || inbound.protocol != Protocol::Vless {
+                ensure!(
+                    !paths
+                        .iter()
+                        .copied()
+                        .chain(reserved)
+                        .chain(c.website.reserved_paths.iter().map(String::as_str))
+                        .any(|path| config::overlap(path, &inbound.path)),
+                    "inbound_path_conflict"
+                );
+                paths.push(&inbound.path);
+            }
+        }
+        if stack.listener == Listener::Dedicated {
+            ensure!(inbound.port >= 1024, "invalid_inbound_port");
+            ensure!(ports.insert(inbound.port), "inbound_port_conflict");
+        } else {
+            ensure!(inbound.port == 0, "invalid_inbound_port");
         }
     }
     for (&id, host) in &catalogue.hosts {
@@ -446,11 +558,14 @@ pub fn validate(c: &Config) -> Result<()> {
             host.host_header.is_empty() || c.domains().contains(&host.host_header),
             "Host header must use a managed server name"
         );
+        let stack = target.stack();
         ensure!(
             host.path.is_empty()
-                || (host.path.len() <= 256
-                    && config::route(&host.path, target.protocol() != Protocol::Ws)),
-            "Invalid host transport path"
+                || (stack.transport != Transport::Raw
+                    && host.path.len() <= 256
+                    && ((host.path == "/" && stack.listener == Listener::Dedicated)
+                        || config::route(&host.path, stack.transport != Transport::Ws))),
+            "invalid_host_path"
         );
         ensure!(
             ["", "chrome", "ios", "firefox", "qq"].contains(&host.fingerprint.as_str()),
@@ -458,15 +573,15 @@ pub fn validate(c: &Config) -> Result<()> {
         );
         ensure!(
             host.alpn.len() <= 2
-                && host.alpn.iter().all(|a| match target.protocol() {
-                    Protocol::Ws => a == "http/1.1",
-                    Protocol::Xhttp => a == "h2" || a == "http/1.1",
-                    Protocol::Reality => false,
+                && host.alpn.iter().all(|a| {
+                    stack.security == Security::Tls
+                        && (a == "http/1.1" || (stack.transport != Transport::Ws && a == "h2"))
                 }),
             "Invalid host ALPN"
         );
         ensure!(
-            host.host_header.is_empty() || target.protocol() != Protocol::Reality,
+            host.host_header.is_empty()
+                || (stack.security == Security::Tls && stack.transport != Transport::Raw),
             "REALITY has no HTTP host override"
         );
     }
@@ -522,6 +637,19 @@ pub fn host_probe_id(key: Uuid, host: Uuid) -> Uuid {
     uuid::Builder::from_random_bytes(id).into_uuid()
 }
 
+pub(crate) fn inbound_user(id: Uuid, inbound: &Inbound, device: Uuid) -> Uuid {
+    if inbound.protocol != Protocol::Vless {
+        return device;
+    }
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, device.as_bytes());
+    let mut context = ring::hmac::Context::with_key(&key);
+    context.update(b"nodectl/device/inbound");
+    context.update(id.as_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&context.sign().as_ref()[..16]);
+    uuid::Builder::from_random_bytes(bytes).into_uuid()
+}
+
 pub fn nginx(c: &Config, template: &str, vars: &BTreeMap<&str, String>) -> Result<String> {
     let mut routes = crate::render::template(template, vars)?;
     let Some(catalogue) = &c.management else {
@@ -532,10 +660,13 @@ pub fn nginx(c: &Config, template: &str, vars: &BTreeMap<&str, String>) -> Resul
         .context("Missing WebSocket route template")?;
     let ws = format!("        location = {{{{ WS_PATH }}}}{ws}");
     for (id, inbound) in catalogue.active_inbounds() {
-        let (route, path_var, socket_var) = match inbound.protocol {
-            Protocol::Xhttp => (xhttp, "XHTTP_PATH", "XHTTP_SOCKET"),
-            Protocol::Ws => (ws.as_str(), "WS_PATH", "WS_SOCKET"),
-            Protocol::Reality => continue,
+        if inbound.dedicated() {
+            continue;
+        }
+        let (route, path_var, socket_var) = if inbound.stack().transport == Transport::Ws {
+            (ws.as_str(), "WS_PATH", "WS_SOCKET")
+        } else {
+            (xhttp, "XHTTP_PATH", "XHTTP_SOCKET")
         };
         routes.push_str(&crate::render::template(
             route,
@@ -596,36 +727,51 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
         .expect("renderer inbounds");
     let mut locked = Vec::new();
     for (id, inbound) in active {
-        for (index, template) in templates.iter().enumerate() {
-            let kind = match template["tag"].as_str() {
-                Some("vless-xhttp") => Protocol::Xhttp,
-                Some("vless-ws") => Protocol::Ws,
-                _ => Protocol::Reality,
+        let stack = inbound.stack();
+        let selected_tag = format!("vless-{}", stack.template());
+        let selected_ipv6 = format!("{selected_tag}-ipv6");
+        let derived = listener_secrets(s, id);
+        for template in &templates {
+            let tag = match template["tag"].as_str() {
+                Some(name) if name == selected_tag => tag(id),
+                Some(name) if name == selected_ipv6 => ipv6_tag(id),
+                _ => continue,
             };
-            if kind != inbound.protocol {
-                continue;
-            }
             let mut entry = template.clone();
-            let tag = if index == 3 { ipv6_tag(id) } else { tag(id) };
-            let derived = listener_secrets(s, id);
             entry["tag"] = json!(tag);
             locked.push(tag);
             entry["settings"]["clients"][0]["id"] = json!(derived.reality_uuid);
-            if kind == Protocol::Reality {
+            if inbound.dedicated() {
                 entry["port"] = json!(inbound.port);
-                entry["streamSettings"]["realitySettings"]["privateKey"] =
-                    json!(derived.reality_private_key);
-                entry["streamSettings"]["realitySettings"]["shortIds"] =
-                    json!([derived.reality_short_id]);
+                if stack.security == Security::Reality {
+                    entry["streamSettings"]["realitySettings"]["privateKey"] =
+                        json!(derived.reality_private_key);
+                    entry["streamSettings"]["realitySettings"]["shortIds"] =
+                        json!([derived.reality_short_id]);
+                }
             } else {
                 entry["listen"] = json!(format!("{},0660", socket(id)));
             }
-            let path_key = if kind == Protocol::Ws {
-                "wsSettings"
-            } else {
-                "xhttpSettings"
-            };
-            entry["streamSettings"][path_key]["path"] = json!(inbound.path);
+            let stream = &mut entry["streamSettings"];
+            match stack.transport {
+                Transport::Raw => {
+                    stream["network"] = json!("raw");
+                    stream.as_object_mut().unwrap().remove("xhttpSettings");
+                    if stack.security == Security::Tls {
+                        stream.as_object_mut().unwrap().remove("realitySettings");
+                        stream["security"] = json!("tls");
+                        stream["tlsSettings"] = json!({
+                            "minVersion":"1.3",
+                            "certificates":[{
+                                "certificateFile":format!("{}/fullchain.pem",c.tls.domain_cert_dir),
+                                "keyFile":format!("{}/privkey.pem",c.tls.domain_cert_dir)
+                            }]
+                        });
+                    }
+                }
+                Transport::Xhttp => stream["xhttpSettings"]["path"] = json!(inbound.path),
+                Transport::Ws => stream["wsSettings"]["path"] = json!(inbound.path),
+            }
             inbounds.push(entry);
         }
     }
@@ -642,6 +788,32 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
         );
 }
 
+pub(crate) fn materialize_tls(c: &Config, xray: &mut Value) -> Result<()> {
+    let tags: BTreeSet<_> = c
+        .management
+        .iter()
+        .flat_map(|m| m.active_inbounds())
+        .filter(|(_, inbound)| inbound.stack() == RAW_TLS)
+        .flat_map(|(id, _)| [tag(id), ipv6_tag(id)])
+        .collect();
+    if tags.is_empty() {
+        return Ok(());
+    }
+    let certificate = std::fs::read_to_string(format!("{}/fullchain.pem", c.tls.domain_cert_dir))
+        .context("managed_tls_certificate")?;
+    let key = std::fs::read_to_string(format!("{}/privkey.pem", c.tls.domain_cert_dir))
+        .context("managed_tls_certificate")?;
+    for entry in xray["inbounds"]
+        .as_array_mut()
+        .context("Missing Xray inbounds")?
+    {
+        if entry["tag"].as_str().is_some_and(|tag| tags.contains(tag)) {
+            entry["streamSettings"]["tlsSettings"]["certificates"] = json!([{"certificate":certificate.lines().collect::<Vec<_>>(),"key":key.lines().collect::<Vec<_>>()}]);
+        }
+    }
+    Ok(())
+}
+
 pub fn client_outbound(
     c: &Config,
     s: &Secrets,
@@ -650,7 +822,11 @@ pub fn client_outbound(
     endpoint: Option<&Endpoint>,
     user: Uuid,
 ) -> Result<Value> {
-    let protocol = target.protocol();
+    let stack = target.stack();
+    let user = match target {
+        Target::Builtin(_) => user,
+        Target::Managed(id, inbound) => inbound_user(id, inbound, user),
+    };
     let mut identity = match target {
         Target::Builtin(_) => s.clone(),
         Target::Managed(id, _) => listener_secrets(s, id),
@@ -661,28 +837,38 @@ pub fn client_outbound(
     let fingerprint = host
         .filter(|h| !h.fingerprint.is_empty())
         .map_or("chrome", |h| &h.fingerprint);
-    let mut outbound = crate::render::outbound(c, &identity, protocol.name(), fingerprint)?;
+    let mut outbound = crate::render::outbound(c, &identity, stack.template(), fingerprint)?;
     let server = &mut outbound["settings"]["vnext"][0];
     server["port"] = json!(endpoint.map_or_else(|| target.port(c), |e| e.port));
     if let Some(endpoint) = endpoint {
         server["address"] = json!(endpoint.address);
     }
     let stream = &mut outbound["streamSettings"];
-    let settings = if protocol == Protocol::Ws {
-        "wsSettings"
-    } else {
-        "xhttpSettings"
+    let settings = match stack.transport {
+        Transport::Raw => {
+            stream["network"] = json!("raw");
+            stream.as_object_mut().unwrap().remove("xhttpSettings");
+            if stack.security == Security::Tls {
+                stream.as_object_mut().unwrap().remove("realitySettings");
+                stream["security"] = json!("tls");
+                stream["tlsSettings"] = json!({
+                    "serverName":c.node.domain, "fingerprint":fingerprint,
+                    "useSystemCA":true, "minVersion":"1.3"
+                });
+            }
+            None
+        }
+        Transport::Xhttp => Some("xhttpSettings"),
+        Transport::Ws => Some("wsSettings"),
     };
-    let path = match target {
-        Target::Builtin(p) => p.path(c),
-        Target::Managed(_, inbound) => &inbound.path,
-    };
-    stream[settings]["path"] = json!(
-        host.filter(|h| !h.path.is_empty())
-            .map_or(path, |h| h.path.as_str())
-    );
+    if let Some(settings) = settings {
+        stream[settings]["path"] = json!(
+            host.filter(|h| !h.path.is_empty())
+                .map_or_else(|| target.path(c), |h| h.path.as_str())
+        );
+    }
     if let Some(host) = host {
-        let security = if protocol == Protocol::Reality {
+        let security = if stack.security == Security::Reality {
             "realitySettings"
         } else {
             "tlsSettings"
@@ -693,8 +879,8 @@ pub fn client_outbound(
         if !host.alpn.is_empty() {
             stream[security]["alpn"] = json!(host.alpn);
         }
-        if !host.host_header.is_empty() {
-            if protocol == Protocol::Ws {
+        if let Some(settings) = settings.filter(|_| !host.host_header.is_empty()) {
+            if stack.transport == Transport::Ws {
                 stream[settings]["headers"]["Host"] = json!(host.host_header);
             } else {
                 stream[settings]["host"] = json!(host.host_header);
