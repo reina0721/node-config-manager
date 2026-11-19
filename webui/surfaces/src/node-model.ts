@@ -594,6 +594,7 @@ export const nativeProfileSchema = z.object({
 });
 export type NativeProfile = z.infer<typeof nativeProfileSchema>;
 export const proxyAccessSchema = z.object({
+  created_device_id: z.string().optional(),
   clients: z
     .array(
       z.object({

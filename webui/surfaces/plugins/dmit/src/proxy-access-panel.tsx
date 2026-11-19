@@ -4,17 +4,10 @@ import { Section } from '@community-go/surface-foundation/layout';
 import { Action } from '@community-go/ui-adapter/action';
 import { DataTable } from '@community-go/ui-adapter/data-display';
 import { AlertBanner, Badge } from '@community-go/ui-adapter/feedback';
-import {
-  PasswordField,
-  SelectField,
-  SwitchField,
-  TextField,
-} from '@community-go/ui-adapter/form-field';
+import { PasswordField, SwitchField, TextField } from '@community-go/ui-adapter/form-field';
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import {
   useNodeManagement,
-  type DeviceExportFormat,
-  type NativeProfile,
   type ProxyAccess,
   type ProxyAccessChange,
 } from '../../../src/node-management';
@@ -27,16 +20,14 @@ type Confirm = Readonly<{ label: string; description: string; change: ProxyAcces
 
 export default function ProxyAccessPanel({
   data,
-  subscriptions,
   refresh,
-}: Readonly<{ data: ProxyAccess; subscriptions: boolean; refresh: () => Promise<void> }>) {
+}: Readonly<{ data: ProxyAccess; refresh: () => Promise<void> }>) {
   const api = useNodeManagement();
   const t = useNodeText();
   const [selected, setSelected] = useState<string[]>([]);
   const [editing, setEditing] = useState<string | null>();
   const [profileDirty, setProfileDirty] = useState(false);
   const [policyDirty, setPolicyDirty] = useState(false);
-  const [deviceDirty, setDeviceDirty] = useState(false);
   const filters = useListFilters();
   const [sample, setSample] = useState(() => ({ data, now: Date.now() / 1000 }));
   if (sample.data !== data) setSample({ data, now: new Date().getTime() / 1000 });
@@ -44,7 +35,6 @@ export default function ProxyAccessPanel({
     setError('');
     setProfileDirty(false);
     setPolicyDirty(false);
-    setDeviceDirty(false);
     setEditing(name);
   };
   const close = () => {
@@ -227,7 +217,7 @@ export default function ProxyAccessPanel({
           <EditorDrawer
             title={user?.username ?? t('access.create')}
             description={t('clients.description')}
-            dirty={profileDirty || deviceDirty || policyDirty}
+            dirty={profileDirty || policyDirty}
             onClose={close}
             busy={busy}
           >
@@ -241,7 +231,6 @@ export default function ProxyAccessPanel({
               busy={busy}
               change={change}
               onProfileDirty={setProfileDirty}
-              onDeviceDirty={setDeviceDirty}
               onCreated={close}
               onDelete={() => {
                 if (user)
@@ -258,14 +247,6 @@ export default function ProxyAccessPanel({
                   change: { action: 'delete-device', device: id },
                 })
               }
-              download={(id, format) => {
-                void perform(() => api.downloadProxyProfile(id, format), false);
-              }}
-              subscriptions={data.enabled && subscriptions}
-              clients={data.clients.filter(
-                (client) => user && client.usernames.includes(user.username),
-              )}
-              extraFormats={data.extra_profile_formats ?? []}
               queue={(entry) =>
                 setBulk((items) => [
                   ...items.filter((item) => item.username !== entry.username),
@@ -356,14 +337,9 @@ function UserEditor({
   busy,
   change,
   onProfileDirty,
-  onDeviceDirty,
   onCreated,
   onDelete,
   onDeviceDelete,
-  download,
-  subscriptions,
-  clients,
-  extraFormats,
   queue,
   queueFull,
 }: Readonly<{
@@ -371,44 +347,16 @@ function UserEditor({
   busy: boolean;
   change: (input: ProxyAccessChange) => Promise<boolean>;
   onProfileDirty: (dirty: boolean) => void;
-  onDeviceDirty: (dirty: boolean) => void;
   onCreated: () => void;
   onDelete: () => void;
   onDeviceDelete: (id: string) => void;
-  download: (id: string, format: DeviceExportFormat) => void;
-  subscriptions: boolean;
-  clients: ProxyAccess['clients'];
-  extraFormats: NonNullable<ProxyAccess['extra_profile_formats']>;
   queue: (entry: NewUser) => void;
   queueFull: boolean;
 }>) {
   const t = useNodeText();
-  const api = useNodeManagement();
-  const [native, setNative] = useState<{
-    device: string;
-    profiles: NativeProfile[];
-    error?: string;
-  }>();
-  const [loadingNative, setLoadingNative] = useState(false);
-  const showNative = async (device: string) => {
-    setLoadingNative(true);
-    try {
-      setNative({ device, profiles: await api.nativeProfiles(device) });
-    } catch (e) {
-      setNative({
-        device,
-        profiles: [],
-        error: e instanceof Error ? e.message : t('common.failed'),
-      });
-    } finally {
-      setLoadingNative(false);
-    }
-  };
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [limit, setLimit] = useState<string>();
-  const [device, setDevice] = useState('');
-  const [client, setClient] = useState('legacy');
   const count = Number(limit ?? user?.device_limit ?? 1);
   const valid = Number.isInteger(count) && count >= 1 && count <= 32;
   const usernameValid = Boolean(user) || /^[a-zA-Z0-9._@-]{1,64}$/.test(username.trim());
@@ -418,7 +366,7 @@ function UserEditor({
   const canSave = valid && usernameValid && passwordValid;
   return (
     <div className="grid gap-3">
-      <h3 className="font-semibold">{t('console.devicesTab')}</h3>
+      <h3 className="font-semibold">{t('sharedClients.accountSettings')}</h3>
       {user ? null : (
         <TextField
           label={t('access.username')}
@@ -505,50 +453,8 @@ function UserEditor({
       </div>
       {user ? (
         <>
-          {clients.length > 0 && (
-            <SelectField
-              label={t('sharedClients.definition')}
-              value={clients.some((record) => record.id === client) ? client : 'legacy'}
-              options={[
-                { value: 'legacy', label: t('sharedClients.legacy') },
-                ...clients.map((record) => ({ value: record.id, label: record.name })),
-              ]}
-              onValueChange={(value) => {
-                setClient(value);
-                onDeviceDirty(true);
-              }}
-            />
-          )}
-          <TextField
-            label={t('access.deviceName')}
-            hint={t('access.deviceHint')}
-            value={device}
-            onChange={(e) => {
-              setDevice(e.target.value);
-              onDeviceDirty(true);
-            }}
-          />
-          <div>
-            <Action
-              variant="secondary"
-              disabled={busy || !device.trim()}
-              onPress={() => {
-                void change({
-                  action: 'create-device',
-                  username: user.username,
-                  label: device.trim(),
-                  ...(clients.some((record) => record.id === client) ? { client } : {}),
-                }).then((ok) => {
-                  if (ok) {
-                    setDevice('');
-                    onDeviceDirty(false);
-                  }
-                });
-              }}
-            >
-              {t('access.createDevice')}
-            </Action>
-          </div>
+          <h3 className="font-semibold">{t('access.devices')}</h3>
+          <p className="text-sm text-ink-muted">{t('sharedClients.downloadLocation')}</p>
           {user.devices.length ? (
             <ul className="grid gap-3" aria-label={t('access.devices')}>
               {user.devices.map((row) => (
@@ -562,103 +468,13 @@ function UserEditor({
                       {row.expires ? <Timestamp value={row.expires} /> : t('access.signedOut')}
                     </p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Action
-                      variant="secondary"
-                      disabled={busy}
-                      onPress={() => download(row.id, 'mihomo')}
-                    >
-                      {t('nodes.mihomo')}
-                    </Action>
-                    <Action
-                      variant="secondary"
-                      disabled={busy}
-                      onPress={() => download(row.id, 'xray')}
-                    >
-                      {t('nodes.xray')}
-                    </Action>
-                    <Action
-                      variant="secondary"
-                      disabled={busy}
-                      onPress={() => download(row.id, 'mihomo-weighted')}
-                    >
-                      {t('nodes.mihomoWeighted')}
-                    </Action>
-                    {extraFormats
-                      .filter((format) => format !== 'native')
-                      .map((format) => (
-                        <Action
-                          key={format}
-                          variant="secondary"
-                          disabled={busy}
-                          onPress={() => download(row.id, format)}
-                        >
-                          {t('access.export-' + format)}
-                        </Action>
-                      ))}
-                    {extraFormats.includes('native') && (
-                      <Action
-                        variant="secondary"
-                        disabled={busy || loadingNative}
-                        onPress={() => void showNative(row.id)}
-                      >
-                        {t('access.nativeProfiles')}
-                      </Action>
-                    )}
-                    {subscriptions ? (
-                      <Action
-                        variant="secondary"
-                        disabled={busy}
-                        onPress={() => download(row.id, 'subscriptions')}
-                      >
-                        {t('access.downloadSubscriptions')}
-                      </Action>
-                    ) : null}
-                    <Action
-                      variant="secondary"
-                      disabled={busy}
-                      onPress={() => onDeviceDelete(row.id)}
-                    >
-                      {t('access.deleteDevice')}
-                    </Action>
-                  </div>
-                  {native?.device === row.id && (
-                    <div className="grid gap-2">
-                      {native.error ? (
-                        <AlertBanner
-                          icon="!"
-                          tone="danger"
-                          title={t('common.failed')}
-                          description={native.error}
-                        />
-                      ) : native.profiles.length ? (
-                        native.profiles.map((profile) => (
-                          <div className="grid min-w-0 gap-1" key={profile.format}>
-                            <p className="break-all text-sm">{profile.name}</p>
-                            <div>
-                              <Action
-                                variant="secondary"
-                                disabled={busy}
-                                onPress={() => download(row.id, profile.format)}
-                              >
-                                {t(
-                                  profile.format.startsWith('native-wireguard/')
-                                    ? 'access.downloadWireguard'
-                                    : profile.format.startsWith('native-tuic/')
-                                      ? 'access.downloadTuic'
-                                      : profile.format.startsWith('native-amneziawg/')
-                                        ? 'access.downloadAmneziawg'
-                                        : 'access.downloadHysteria',
-                                )}
-                              </Action>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <p role="status">{t('access.noNativeProfiles')}</p>
-                      )}
-                    </div>
-                  )}
+                  <Action
+                    variant="secondary"
+                    disabled={busy}
+                    onPress={() => onDeviceDelete(row.id)}
+                  >
+                    {t('access.deleteDevice')}
+                  </Action>
                 </li>
               ))}
             </ul>

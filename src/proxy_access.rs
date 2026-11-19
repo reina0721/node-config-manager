@@ -528,6 +528,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
     let previous = data.clone();
     data.retain_current_grants(admin_auth::now());
     let mut refresh_xray = false;
+    let mut created_device_id = None;
     match action {
         Change::Settings {
             enabled,
@@ -700,8 +701,9 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                 "invalid_proxy_device"
             );
             ensure!(data.devices.len() < MAX_DEVICES, "invalid_proxy_device");
+            let id = Uuid::new_v4();
             data.devices.insert(
-                Uuid::new_v4(),
+                id,
                 Device {
                     username,
                     client,
@@ -712,6 +714,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                     attempts: vec![],
                 },
             );
+            created_device_id = Some(id);
             refresh_xray = data.enabled;
             if refresh_xray {
                 runtime::validate(store, binary)?;
@@ -784,7 +787,11 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
         return Err(error);
     }
     drop(lock);
-    data.view(store, &portal_url(store))
+    let mut view = data.view(store, &portal_url(store))?;
+    if let Some(id) = created_device_id {
+        view["created_device_id"] = json!(id);
+    }
+    Ok(view)
 }
 
 pub fn profile(store: &Store, id: Uuid, format: &str) -> Result<String> {

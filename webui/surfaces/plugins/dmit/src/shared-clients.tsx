@@ -9,6 +9,7 @@ import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import { useNodeManagement, type ProxyAccess } from '../../../src/node-management';
 import { EditorDrawer } from './collection-controls';
 import { ConsoleLink, useNodeQuery, useNodeText } from './common';
+import ClientDeviceDownloads from './client-device-downloads';
 
 type Client = ProxyAccess['clients'][number];
 type Draft = {
@@ -25,15 +26,18 @@ function changed(items: string[], id: string, enabled: boolean): string[] {
 
 export default function SharedClients({
   data,
+  subscriptions,
   refresh,
 }: {
   data: ProxyAccess;
+  subscriptions: boolean;
   refresh: () => Promise<void>;
 }) {
   const api = useNodeManagement();
   const t = useNodeText();
   const configuration = useNodeQuery(api.configuration);
   const [draft, setDraft] = useState<Draft>();
+  const [downloadTarget, setDownloadTarget] = useState<string | null>();
   const [baseline, setBaseline] = useState<Draft>();
   const [confirm, setConfirm] = useState<'save' | 'delete'>();
   const [error, setError] = useState('');
@@ -92,6 +96,7 @@ export default function SharedClients({
   };
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
   const revokes = Boolean(draft?.client?.usernames.some((name) => !draft.users.includes(name)));
+  const downloadClient = data.clients.find((client) => client.id === downloadTarget);
   return (
     <>
       <Section
@@ -141,19 +146,46 @@ export default function SharedClients({
               id: 'edit',
               label: t('common.operation'),
               render: (client) => (
-                <Action
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy}
-                  onPress={() => void edit(client)}
-                >
-                  {t('console.edit')}
-                </Action>
+                <div className="flex flex-wrap gap-2">
+                  <Action size="sm" disabled={busy} onPress={() => setDownloadTarget(client.id)}>
+                    {t('sharedClients.deviceDownloads')}
+                  </Action>
+                  <Action
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onPress={() => void edit(client)}
+                  >
+                    {t('console.edit')}
+                  </Action>
+                </div>
               ),
             },
           ]}
         />
       </Section>
+      {data.users.length > 0 && (
+        <Section
+          title={t('sharedClients.legacy')}
+          description={t('sharedClients.legacyDescription')}
+          action={
+            <Action variant="secondary" disabled={busy} onPress={() => setDownloadTarget(null)}>
+              {t('sharedClients.deviceDownloads')}
+            </Action>
+          }
+          children={null}
+        />
+      )}
+      {(downloadTarget === null || downloadClient) && (
+        <ClientDeviceDownloads
+          key={downloadClient?.id ?? 'legacy'}
+          client={downloadClient}
+          data={data}
+          subscriptions={subscriptions}
+          refresh={refresh}
+          onClose={() => setDownloadTarget(undefined)}
+        />
+      )}
       {draft && (
         <EditorDrawer
           title={t('sharedClients.definition')}

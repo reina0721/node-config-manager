@@ -20,24 +20,52 @@ test('浏览器认证只在面板设置编辑，设备配置只在客户端下�
 
     await navigate(page, '客户端');
     await expect(page.getByRole('textbox', { name: '认证缓存时间（秒）' })).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: '共享客户端' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await page.getByRole('tab', { name: '用户与设备' }).click();
     await page.getByRole('button', { name: '新建用户', exact: true }).click();
     const create = page.getByRole('dialog', { name: '新建用户' });
     await create.getByLabel('用户名', { exact: true }).fill(username);
     await create.getByLabel('密码', { exact: true }).fill('isolated-browser-test');
     await create.getByRole('button', { name: '新建用户', exact: true }).click();
     await expect(create).toBeHidden();
-    const open = async () => {
+    const openAccount = async () => {
       await page
         .getByRole('row', { name: new RegExp(username) })
         .getByRole('button', { name: '管理', exact: true })
         .click();
       return page.getByRole('dialog', { name: username, exact: true });
     };
-    let account = await open();
-    await account.getByLabel('设备名称', { exact: true }).fill('Chromium fixture');
-    await account.getByRole('button', { name: '登记设备', exact: true }).click();
-    await expect(account.getByRole('heading', { name: 'Chromium fixture' })).toBeVisible();
+    const account = await openAccount();
+    await expect(account.getByLabel('设备名称', { exact: true })).toHaveCount(0);
+    await expect(
+      account.getByRole('button', { name: '导出 Mihomo YAML', exact: true }),
+    ).toHaveCount(0);
     await account.getByRole('button', { name: '关闭抽屉' }).click();
+    const openDownloads = async () => {
+      await page
+        .getByRole('heading', { name: '原有设备配置', exact: true })
+        .locator('../..')
+        .getByRole('button', { name: '设备与下载', exact: true })
+        .click();
+      const downloads = page.getByRole('dialog', { name: '设备与下载', exact: true });
+      const userSelect = downloads.getByRole('button', { name: /用户名/ });
+      if ((await userSelect.getByText(username, { exact: true }).count()) === 0) {
+        await userSelect.click();
+        await page.getByRole('option', { name: username, exact: true }).click();
+      }
+      return downloads;
+    };
+    await page.getByRole('tab', { name: '共享客户端' }).click();
+    let downloads = await openDownloads();
+    await downloads.getByLabel('设备名称', { exact: true }).fill('Chromium fixture');
+    await downloads.getByRole('button', { name: '登记设备', exact: true }).click();
+    await expect(
+      downloads.getByRole('button', { name: /Chromium fixture.*选择设备/ }),
+    ).toBeVisible();
+    await downloads.getByRole('button', { name: '关闭抽屉' }).click();
 
     await navigate(page, '面板设置');
     await page.getByRole('button', { name: '启用认证', exact: true }).click();
@@ -50,9 +78,9 @@ test('浏览器认证只在面板设置编辑，设备配置只在客户端下�
     await expect(page.getByRole('button', { name: '导出 Xray JSON' })).toHaveCount(0);
     await page.getByRole('link', { name: '前往客户端下载' }).click();
     await expect(page.getByRole('heading', { name: '客户端', level: 1 })).toBeVisible();
-    account = await open();
+    downloads = await openDownloads();
     const pendingDownload = page.waitForEvent('download');
-    await account.getByRole('button', { name: '导出 Mihomo YAML', exact: true }).click();
+    await downloads.getByRole('button', { name: '导出 Mihomo YAML', exact: true }).click();
     expect((await pendingDownload).suggestedFilename()).toBe('nodectl-mihomo.yaml');
   } finally {
     await page.evaluate(

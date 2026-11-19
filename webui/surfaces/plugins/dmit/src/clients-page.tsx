@@ -28,10 +28,10 @@ export default function ClientsPage() {
             variant="section"
             items={[
               {
-                id: 'users',
-                label: t('sharedClients.usersTab'),
+                id: 'definitions',
+                label: t('sharedClients.definitionsTab'),
                 content: (
-                  <ProxyAccessPanel
+                  <SharedClients
                     data={access.data}
                     subscriptions={config.data?.subscription_enabled ?? false}
                     refresh={access.refresh}
@@ -39,9 +39,9 @@ export default function ClientsPage() {
                 ),
               },
               {
-                id: 'definitions',
-                label: t('sharedClients.definitionsTab'),
-                content: <SharedClients data={access.data} refresh={access.refresh} />,
+                id: 'users',
+                label: t('sharedClients.usersTab'),
+                content: <ProxyAccessPanel data={access.data} refresh={access.refresh} />,
               },
             ]}
           />
