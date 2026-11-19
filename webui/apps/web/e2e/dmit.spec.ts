@@ -16,7 +16,8 @@ async function auditAccessibility(page: Page) {
     })),
   ).toEqual([]);
 }
-test('真实 HTTPS 下的七页、移动导航、深色模式与可访问性', async ({ page, browser }) => {
+test('真实 HTTPS 下的 17 页、移动导航、深色模式与可访问性', async ({ page, browser }) => {
+  test.setTimeout(180000);
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => {
@@ -52,11 +53,21 @@ test('真实 HTTPS 下的七页、移动导航、深色模式与可访问性', a
   await auditAccessibility(page);
   await page.screenshot({ path: resolve(evidence, 'overview-1440.png'), fullPage: true });
   const routes = [
-    ['节点与订阅', 'nodes'],
-    ['配置中心', 'config'],
+    ['入站', 'inbounds'],
+    ['主机', 'hosts'],
+    ['客户端', 'clients'],
+    ['分组', 'groups'],
+    ['订阅与下载', 'nodes'],
     ['网络与 WARP', 'network'],
     ['DNS 与证书', 'dns'],
+    ['出站', 'upstreams'],
+    ['路由', 'rules'],
+    ['节点管理', 'fleet'],
     ['服务管理', 'services'],
+    ['配置中心', 'config'],
+    ['面板设置', 'panel'],
+    ['Xray 配置', 'xray'],
+    ['API 文档', 'api'],
     ['运维中心', 'operations'],
   ] as const;
   for (const [name, file] of routes) {
@@ -67,20 +78,31 @@ test('真实 HTTPS 下的七页、移动导航、深色模式与可访问性', a
   }
   await page.getByRole('button', { name: '深色模式', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.locator('aside a[aria-current="page"]').evaluate(async (link) => {
+    await Promise.allSettled(link.getAnimations().map((animation) => animation.finished));
+  });
   await auditAccessibility(page);
   await page.screenshot({ path: resolve(evidence, 'operations-dark-1440.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
+  for (const [name, file] of routes) {
+    await navigate(page, name);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      file,
+    ).toBe(true);
+    await auditAccessibility(page);
+  }
   await navigate(page, '配置中心');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
-  await auditAccessibility(page);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
-    true,
-  );
   await page.screenshot({ path: resolve(evidence, 'config-dark-390.png'), fullPage: true });
   await page.getByRole('button', { name: '浅色模式', exact: true }).click();
-  await navigate(page, '总览');
+  await navigate(page, '运行总览');
   await expect(page.getByRole('heading', { name: '节点运行总览', exact: true })).toBeVisible();
   await page.screenshot({ path: resolve(evidence, 'overview-390.png'), fullPage: true });
+  for (const [name, file] of routes) {
+    await page.goto('/admin/dmit/' + file + '/');
+    await expect(page.getByRole('heading', { name, exact: true, level: 1 })).toBeVisible();
+  }
   expect(errors).toEqual([]);
   expect(
     await page.evaluate(() => Object.keys(localStorage).concat(Object.keys(sessionStorage))),
@@ -91,7 +113,7 @@ test('真实 HTTPS 下的七页、移动导航、深色模式与可访问性', a
 });
 test('客户端导出使用当前成功发布并保存真实文件', async ({ page }) => {
   await login(page);
-  await navigate(page, '节点与订阅');
+  await navigate(page, '订阅与下载');
   await page.getByRole('button', { name: '导出 Xray JSON', exact: true }).click();
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: '保存配置文件', exact: true }).click();

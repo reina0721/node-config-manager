@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Section } from '@community-go/surface-foundation/layout';
 import { Action } from '@community-go/ui-adapter/action';
 import { DataTable } from '@community-go/ui-adapter/data-display';
-import { AlertBanner } from '@community-go/ui-adapter/feedback';
+import { AlertBanner, Badge } from '@community-go/ui-adapter/feedback';
 import { PasswordField, SelectField, TextField } from '@community-go/ui-adapter/form-field';
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import { useNodeManagement, type PeerGrant } from '../../../src/node-management';
@@ -19,6 +19,7 @@ export default function FleetPage() {
   const [hostname, setHostname] = useState('');
   const [address, setAddress] = useState('');
   const [port, setPort] = useState('9443');
+  const validPort = /^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535;
   const [token, setToken] = useState('');
   const [grantName, setGrantName] = useState('');
   const [scope, setScope] = useState<PeerGrant['scope']>('read');
@@ -61,6 +62,7 @@ export default function FleetPage() {
     <NodePage
       name="fleet"
       loading={fleet.loading || status.loading}
+      refreshing={fleet.refreshing || status.refreshing}
       error={fleet.error || status.error}
       refresh={async () => {
         await Promise.all([fleet.refresh(), status.refresh()]);
@@ -116,7 +118,8 @@ export default function FleetPage() {
                   label: label('seen'),
                   render: (peer) => (
                     <span>
-                      <Timestamp value={peer.last_seen} /> {peer.stale ? label('stale') : ''}
+                      <Timestamp value={peer.last_seen} />{' '}
+                      {peer.stale && <Badge tone="warning">{label('stale')}</Badge>}
                     </span>
                   ),
                 },
@@ -154,6 +157,7 @@ export default function FleetPage() {
               <TextField
                 label={t('catalogue.port')}
                 value={port}
+                error={validPort ? '' : t('console.portError')}
                 onChange={(e) => setPort(e.target.value)}
               />
               <PasswordField
@@ -179,7 +183,11 @@ export default function FleetPage() {
                       });
                       setToken('');
                     }),
-                  !name || !hostname || !address || token.length !== 64,
+                  !name.trim() ||
+                    !hostname.trim() ||
+                    !address.trim() ||
+                    !validPort ||
+                    token.length !== 64,
                 )}
               </div>
             </div>

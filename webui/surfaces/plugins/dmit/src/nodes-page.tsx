@@ -1,5 +1,5 @@
 'use client';
-import { lazy, Suspense, useState } from 'react';
+import { useState } from 'react';
 import { Section } from '@community-go/surface-foundation/layout';
 import { DataTable } from '@community-go/ui-adapter/data-display';
 import { Action } from '@community-go/ui-adapter/action';
@@ -15,23 +15,22 @@ import {
   Code,
   OperationButton,
   TaskResult,
-  JobProgress,
   useNodeQuery,
+  ConsoleLink,
   useNodeText,
 } from './common';
-const ProxyAccessPanel = lazy(() => import('./proxy-access-panel'));
 export default function NodesPage() {
   const api = useNodeManagement();
   const q = useNodeQuery(api.nodes);
-  const access = useNodeQuery(api.proxyAccess);
+  const access = useNodeQuery(api.panel);
   const t = useNodeText();
   const [result, setResult] = useState<JobResult | null>(null);
   const [content, setContent] = useState('');
   const [format, setFormat] = useState<ClientExportFormat>('xray');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState<ClientExportFormat | null>(null);
   const exportClients = async (format: ClientExportFormat) => {
-    setLoading(true);
+    setLoading(format);
     try {
       setContent(await api.exportClients(format));
       setFormat(format);
@@ -39,22 +38,30 @@ export default function NodesPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      setLoading(null);
     }
   };
   return (
     <NodePage
       name="nodes"
       loading={q.loading || access.loading}
+      refreshing={q.refreshing || access.refreshing}
       error={q.error || access.error}
       refresh={async () => {
         await Promise.all([q.refresh(), access.refresh()]);
       }}
     >
-      <JobProgress />
       {q.data ? (
         <>
-          <Section title={t('nodes.protocols')}>
+          <Section
+            title={t('nodes.protocols')}
+            action={
+              <div className="flex flex-wrap gap-3">
+                <ConsoleLink to="dmit.inbounds">{t('nav.inbounds')}</ConsoleLink>
+                <ConsoleLink to="dmit.config">{t('nav.config')}</ConsoleLink>
+              </div>
+            }
+          >
             <DataTable
               label={t('nodes.protocols')}
               rows={q.data.protocols.map((p) => ({ ...p, id: p.name }))}
@@ -104,22 +111,22 @@ export default function NodesPage() {
           </Section>
         </>
       ) : null}
-      {access.data ? (
-        <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
-          <ProxyAccessPanel
-            data={access.data}
-            subscriptions={q.data?.distribution_enabled === true}
-            refresh={access.refresh}
-          />
-        </Suspense>
+      {access.data?.browser_access ? (
+        <Section
+          title={t('access.devices')}
+          description={t('console.deviceExportHint')}
+          contentInset
+        >
+          <ConsoleLink to="dmit.clients">{t('console.openClients')}</ConsoleLink>
+        </Section>
       ) : null}
-      {access.data?.enabled === false ? (
+      {access.data?.browser_access === false ? (
         <Section title={t('nodes.export')} description={t('nodes.exportRisk')} contentInset>
           <div className="flex flex-wrap gap-3">
             <Action
               variant="secondary"
-              disabled={!q.data || loading}
-              loading={loading}
+              disabled={!q.data || loading !== null}
+              loading={loading === 'xray'}
               onPress={() => {
                 void exportClients('xray');
               }}
@@ -128,7 +135,8 @@ export default function NodesPage() {
             </Action>
             <Action
               variant="secondary"
-              disabled={!q.data || loading}
+              disabled={!q.data || loading !== null}
+              loading={loading === 'mihomo'}
               onPress={() => {
                 void exportClients('mihomo');
               }}
@@ -137,8 +145,8 @@ export default function NodesPage() {
             </Action>
             <Action
               variant="secondary"
-              disabled={!q.data || loading}
-              loading={loading}
+              disabled={!q.data || loading !== null}
+              loading={loading === 'mihomo-weighted'}
               onPress={() => {
                 void exportClients('mihomo-weighted');
               }}
@@ -153,7 +161,10 @@ export default function NodesPage() {
                   {t('nodes.saveFile')}
                 </Action>
               </div>
-              <Code>{content}</Code>
+              <details>
+                <summary className="cursor-pointer font-medium">{t('console.showPreview')}</summary>
+                <Code>{content}</Code>
+              </details>
             </div>
           ) : null}
           {error ? (

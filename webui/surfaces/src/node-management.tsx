@@ -37,6 +37,7 @@ export type NodeManagementPort = Readonly<{
   dns: () => Promise<DnsView>;
   services: () => Promise<readonly ManagedService[]>;
   operations: () => Promise<OperationsView>;
+  jobDetails: (id: string) => Promise<ManagedJob>;
   versions: () => Promise<VersionsView>;
   proxyAccess: () => Promise<ProxyAccess>;
   changeProxyAccess: (input: ProxyAccessChange) => Promise<ProxyAccess>;
@@ -64,7 +65,7 @@ export type NodeManagementPort = Readonly<{
   check: (plan: string) => Promise<JobResult>;
   prepareDeployment: (plan: string, options: ProvisionOptions) => Promise<JobResult>;
   apply: (plan: string, confirm: string) => Promise<JobResult>;
-  operate: (input: OperationInput) => Promise<JobResult>;
+  operate: (input: OperationInput, onAccepted?: () => void) => Promise<JobResult>;
   credentials: (zone: string, token: string) => Promise<void>;
   exportClients: (format: ClientExportFormat) => Promise<string>;
   downloadClients: (format: ClientExportFormat, content: string) => void;

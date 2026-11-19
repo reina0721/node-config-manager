@@ -19,6 +19,11 @@ export const surfaceShellI18nResources = {
         administration: '节点管理',
         system: '个人',
         development: '开发中心',
+        overview: '总览',
+        access: '接入管理',
+        traffic: '网络与流量',
+        operations: '节点与运维',
+        settings: '系统设置',
       },
       productStates: {
         eyebrow: 'Product semantics',
@@ -69,6 +74,11 @@ export const surfaceShellI18nResources = {
         administration: 'System administration',
         system: 'Personal',
         development: 'Developer center',
+        overview: 'Overview',
+        access: 'Access',
+        traffic: 'Network and traffic',
+        operations: 'Nodes and operations',
+        settings: 'System settings',
       },
       productStates: {
         eyebrow: 'Product semantics',

@@ -2,6 +2,7 @@
 import type { ReactNode } from 'react';
 import { Section } from '@community-go/surface-foundation/layout';
 import { useNodeManagement } from '../../../src/node-management';
+import { ProxyAccessSettings } from './proxy-access-settings';
 import { Code, Details, NodePage, useNodeQuery, useNodeText } from './common';
 
 export function PanelSettingsPage({ links }: { links: ReactNode }) {
@@ -10,9 +11,20 @@ export function PanelSettingsPage({ links }: { links: ReactNode }) {
   const t = useNodeText();
   const enabled = (value: boolean) => t(value ? 'common.enabled' : 'common.disabled');
   return (
-    <NodePage name="panel" loading={q.loading} error={q.error} refresh={q.refresh}>
+    <NodePage
+      name="panel"
+      loading={q.loading}
+      refreshing={q.refreshing}
+      error={q.error}
+      refresh={q.refresh}
+    >
       {q.data && (
         <>
+          <ProxyAccessSettings
+            enabled={q.data.browser_access}
+            ttl={q.data.browser_ttl}
+            refresh={q.refresh}
+          />
           <Section title={t('panel.session')} contentInset>
             <div className="grid gap-4">
               <Details
@@ -31,8 +43,6 @@ export function PanelSettingsPage({ links }: { links: ReactNode }) {
             <Details
               label={t('panel.authorization')}
               items={[
-                [t('access.title'), enabled(q.data.browser_access)],
-                [t('access.ttl'), q.data.browser_ttl + ' s'],
                 [t('nodes.subscription'), enabled(q.data.subscription_enabled)],
                 [t('nodes.status'), q.data.subscription_access],
               ]}
@@ -50,7 +60,13 @@ export function XrayPage({ links }: { links: ReactNode }) {
   const q = useNodeQuery(api.xray);
   const t = useNodeText();
   return (
-    <NodePage name="xray" loading={q.loading} error={q.error} refresh={q.refresh}>
+    <NodePage
+      name="xray"
+      loading={q.loading}
+      refreshing={q.refreshing}
+      error={q.error}
+      refresh={q.refresh}
+    >
       {links}
       {q.data && (
         <Section title={t('xray.redacted')} description={q.data.release} contentInset>
@@ -62,7 +78,10 @@ export function XrayPage({ links }: { links: ReactNode }) {
               [t('nav.rules'), t(q.data.managed_routing ? 'common.enabled' : 'common.disabled')],
             ]}
           />
-          <Code>{JSON.stringify(q.data.configuration, null, 2)}</Code>
+          <details className="mt-4">
+            <summary className="cursor-pointer font-medium">{t('console.showPreview')}</summary>
+            <Code>{JSON.stringify(q.data.configuration, null, 2)}</Code>
+          </details>
         </Section>
       )}
     </NodePage>
@@ -74,7 +93,13 @@ export function ApiPage() {
   const q = useNodeQuery(api.openApi);
   const t = useNodeText();
   return (
-    <NodePage name="api" loading={q.loading} error={q.error} refresh={q.refresh}>
+    <NodePage
+      name="api"
+      loading={q.loading}
+      refreshing={q.refreshing}
+      error={q.error}
+      refresh={q.refresh}
+    >
       <Section title={t('api.authentication')} description={t('api.authDescription')} contentInset>
         <Code>{`GET /admin/api/session
 POST /admin/api/catalogue/preview
@@ -93,7 +118,10 @@ GET /admin/api/jobs/<job>
       </Section>
       {q.data && (
         <Section title="OpenAPI 3.1" contentInset>
-          <Code>{JSON.stringify(q.data, null, 2)}</Code>
+          <details>
+            <summary className="cursor-pointer font-medium">{t('console.viewDetails')}</summary>
+            <Code>{JSON.stringify(q.data, null, 2)}</Code>
+          </details>
         </Section>
       )}
     </NodePage>

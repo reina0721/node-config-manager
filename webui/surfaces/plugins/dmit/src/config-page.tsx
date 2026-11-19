@@ -11,8 +11,39 @@ import {
   type ConfigurationView,
   type ConfigPlan,
 } from '../../../src/node-management';
-import { NodePage, Details, JobProgress, useNodeQuery, useNodeText } from './common';
+import { NodePage, Details, useNodeQuery, NodeLoading, useNodeText } from './common';
+const assetFields = ['domain', 'reality_domain', 'ipv4', 'ipv6'] as const;
 const weightFields = ['xhttp_weight', 'ws_weight', 'reality_weight'] as const;
+
+function isConfigurationObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Preserve newer fields that the administrator did not edit. Arrays are edited as a unit.
+function mergeConfigDraft(base: unknown, draft: unknown, latest: unknown): unknown {
+  if (JSON.stringify(draft) === JSON.stringify(base)) return latest;
+  if (
+    !isConfigurationObject(base) ||
+    !isConfigurationObject(draft) ||
+    !isConfigurationObject(latest)
+  )
+    return draft;
+  const fields = new Set([...Object.keys(base), ...Object.keys(draft), ...Object.keys(latest)]);
+  return Object.fromEntries(
+    [...fields].flatMap((field) => {
+      const value = mergeConfigDraft(base[field], draft[field], latest[field]);
+      return value === undefined ? [] : [[field, value]];
+    }),
+  );
+}
+
+function validDomain(value: string) {
+  return (
+    value !== '' &&
+    value.length <= 253 &&
+    value.split('.').every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))
+  );
+}
 
 function ConfigEditor({
   view,
@@ -20,6 +51,8 @@ function ConfigEditor({
 }: Readonly<{ view: ConfigurationView; refresh: () => Promise<void> }>) {
   const api = useNodeManagement();
   const t = useNodeText();
+  const [baseline, setBaseline] = useState(view);
+  const [applied, setApplied] = useState(false);
   const [draft, setDraft] = useState(view.config);
   const [aliases, setAliases] = useState(view.config.node.aliases.join('\n'));
   const [weights, setWeights] = useState(() =>
@@ -29,12 +62,56 @@ function ConfigEditor({
   const [ticket, setTicket] = useState<string | undefined>();
   const [advanced, setAdvanced] = useState(false);
   const [raw, setRaw] = useState('');
+  const [rawError, setRawError] = useState('');
   const [plan, setPlan] = useState<ConfigPlan | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
-  const weightsValid =
-    weights.every((weight) => /^\d{1,3}$/.test(weight)) &&
-    weights.reduce((sum, weight) => sum + Number(weight), 0) === 100;
+  const validWeights = weights.map((weight) => /^\d{1,3}$/.test(weight) && Number(weight) <= 100);
+  const total = weights.reduce((sum, weight) => sum + Number(weight), 0);
+  const weightsValid = validWeights.every(Boolean) && total === 100;
+  const assetErrors = assetFields.map((field) => {
+    const value = draft.node[field];
+    if (field === 'ipv4')
+      return (
+        !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value) ||
+        value.split('.').some((part) => Number(part) > 255 || String(Number(part)) !== part)
+      );
+    if (field === 'ipv6') {
+      if (!value) return false;
+      if (!/^[a-f0-9:.]+$/i.test(value)) return true;
+      try {
+        return !new URL('http://[' + value + ']').hostname.startsWith('[');
+      } catch {
+        return true;
+      }
+    }
+    return !validDomain(value);
+  });
+  const aliasError = draft.node.aliases.some(
+    (value) => !validDomain(value) || value === draft.node.reality_domain,
+  );
+  const validAssets = !assetErrors.some(Boolean) && !aliasError;
+  const aliasesChanged = aliases !== baseline.config.node.aliases.join('\n');
+  const changedAssets = assetFields.filter(
+    (field) => draft.node[field] !== baseline.config.node[field],
+  );
+  const changedWeights = weightFields.map(
+    (field, index) => weights[index] !== String(baseline.config.clients[field]),
+  );
+  const dirty =
+    advanced || aliasesChanged || changedAssets.length > 0 || changedWeights.some(Boolean);
+  const stale = view.base !== baseline.base;
+  if (stale && (applied || !dirty)) {
+    setBaseline(view);
+    setDraft(view.config);
+    setAliases(view.config.node.aliases.join('\n'));
+    setWeights(weightFields.map((field) => String(view.config.clients[field])));
+    setPlan(null);
+    setApplied(false);
+    setAdvanced(false);
+    setRaw('');
+    setTicket(undefined);
+  }
   const withWeights = () => ({
     ...draft,
     clients: {
@@ -45,6 +122,7 @@ function ConfigEditor({
     },
   });
   const changed = () => {
+    setApplied(false);
     setPlan(null);
     setError('');
   };
@@ -67,8 +145,14 @@ function ConfigEditor({
         try {
           candidate = nodeConfigurationSchema.parse(JSON.parse(raw));
         } catch {
-          throw new Error(t('config.parseError'));
+          setRawError(t('config.parseError'));
+          return;
         }
+      }
+      const latest = await api.configuration();
+      if (latest.base !== baseline.base) {
+        await refresh();
+        throw new Error(t('console.staleDraftDescription'));
       }
       const grant = ticket;
       setTicket(undefined);
@@ -79,13 +163,51 @@ function ConfigEditor({
     });
   return (
     <>
+      {stale && dirty && (
+        <AlertBanner
+          icon="!"
+          tone="warning"
+          title={t('console.staleDraft')}
+          description={t(advanced ? 'console.draftConflict' : 'console.staleDraftDescription')}
+          actionLabel={t('console.rebaseDraft')}
+          onAction={() => {
+            if (advanced) {
+              try {
+                const parsed = nodeConfigurationSchema.parse(JSON.parse(raw));
+                const merged = nodeConfigurationSchema.parse(
+                  mergeConfigDraft(baseline.config, parsed, view.config),
+                );
+                setRaw(JSON.stringify(merged, null, 2));
+                setRawError('');
+              } catch {
+                setRawError(t('config.parseError'));
+                return;
+              }
+            }
+            const next = { ...view.config.node };
+            for (const field of changedAssets) next[field] = draft.node[field];
+            if (aliasesChanged) next.aliases = draft.node.aliases;
+            else setAliases(next.aliases.join('\n'));
+            setDraft({ ...view.config, node: next });
+            setWeights(
+              weightFields.map((field, index) =>
+                changedWeights[index] ? (weights[index] ?? '') : String(view.config.clients[field]),
+              ),
+            );
+            setBaseline(view);
+            setPlan(null);
+            setError('');
+          }}
+        />
+      )}
       <Section title={t('config.assets')} description={t('config.assetsDescription')} contentInset>
         <div className="grid gap-5 md:grid-cols-2">
-          {(['domain', 'reality_domain', 'ipv4', 'ipv6'] as const).map((field) => (
+          {assetFields.map((field, index) => (
             <TextField
               key={field}
               label={t('config.' + (field === 'reality_domain' ? 'reality' : field))}
               value={draft.node[field]}
+              error={assetErrors[index] ? t('console.assetError') : ''}
               disabled={advanced || pending}
               onChange={(e) => {
                 changed();
@@ -100,6 +222,7 @@ function ConfigEditor({
             hint={t('config.aliasHint')}
             rows={3}
             value={aliases}
+            error={aliasError ? t('console.assetError') : ''}
             disabled={advanced || pending}
             onChange={(e) => {
               setAliases(e.target.value);
@@ -129,6 +252,7 @@ function ConfigEditor({
               key={field}
               label={t('config.' + field)}
               value={weights[index] ?? ''}
+              error={!validWeights[index] ? t('console.weightError') : ''}
               disabled={advanced || pending}
               onChange={(e) => {
                 changed();
@@ -139,11 +263,14 @@ function ConfigEditor({
             />
           ))}
         </div>
-        {!advanced && !weightsValid ? (
-          <p role="status" className="mt-3 text-sm text-danger">
-            {t('config.weightError')}
-          </p>
-        ) : null}
+        <div className="mt-3 flex flex-wrap items-center gap-3" role="status">
+          <Badge tone={weightsValid ? 'success' : 'warning'}>
+            {t('console.weightTotal')} · {validWeights.every(Boolean) ? total + '%' : '—'}
+          </Badge>
+          {!advanced && !weightsValid && (
+            <span className="text-sm text-danger">{t('config.weightError')}</span>
+          )}
+        </div>
       </Section>
       <Section
         title={t('config.baseline')}
@@ -181,8 +308,8 @@ function ConfigEditor({
           <PasswordField
             label={t('config.adminToken')}
             purpose="current"
-            showLabel="显示"
-            hideLabel="隐藏"
+            showLabel={t('common.show')}
+            hideLabel={t('common.hide')}
             value={token}
             disabled={pending}
             onChange={(e) => setToken(e.target.value)}
@@ -212,9 +339,11 @@ function ConfigEditor({
               hint={t('config.advancedHint')}
               rows={16}
               value={raw}
+              error={rawError || ''}
               disabled={pending}
               onChange={(e) => {
                 setRaw(e.target.value);
+                setRawError('');
                 changed();
               }}
             />
@@ -226,7 +355,7 @@ function ConfigEditor({
       <div className="flex flex-wrap gap-3">
         <Action
           loading={pending}
-          disabled={pending || (advanced ? !ticket : !weightsValid)}
+          disabled={pending || stale || (advanced ? !ticket : !weightsValid || !validAssets)}
           onPress={() => {
             void preview().catch(() => {});
           }}
@@ -246,13 +375,14 @@ function ConfigEditor({
           announcement="urgent"
         />
       ) : null}
-      {plan ? (
-        <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+      {plan && !stale ? (
+        <Suspense fallback={<NodeLoading />}>
           <PlanReview
             key={plan.plan}
             plan={plan}
             onApplied={async () => {
               setPlan(null);
+              setApplied(true);
               await refresh();
             }}
           />
@@ -265,9 +395,14 @@ export default function ConfigPage() {
   const api = useNodeManagement();
   const q = useNodeQuery(api.configuration);
   return (
-    <NodePage name="config" loading={q.loading} error={q.error} refresh={q.refresh}>
-      <JobProgress />
-      {q.data ? <ConfigEditor key={q.data.base} view={q.data} refresh={q.refresh} /> : null}
+    <NodePage
+      name="config"
+      loading={q.loading}
+      refreshing={q.refreshing}
+      error={q.error}
+      refresh={q.refresh}
+    >
+      {q.data ? <ConfigEditor view={q.data} refresh={q.refresh} /> : null}
     </NodePage>
   );
 }

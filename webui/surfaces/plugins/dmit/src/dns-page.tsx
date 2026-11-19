@@ -12,8 +12,8 @@ import {
   Code,
   OperationButton,
   TaskResult,
-  JobProgress,
   useNodeQuery,
+  NodeLoading,
   useNodeText,
 } from './common';
 export default function DnsPage() {
@@ -23,15 +23,19 @@ export default function DnsPage() {
   const [result, setResult] = useState<JobResult | null>(null);
   const [zone, setZone] = useState('');
   const [token, setToken] = useState('');
+  const validZone = /^[0-9a-f]{32}$/i.test(zone.trim());
+  const [renewalError, setRenewalError] = useState('');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [pending, setPending] = useState(false);
   const [renewal, setRenewal] = useState<ConfigPlan | null>(null);
   const save = async () => {
+    if (!validZone || !token.trim() || pending) return;
     setPending(true);
     setSaved(false);
+    setError('');
     try {
-      await api.credentials(zone, token);
+      await api.credentials(zone.trim(), token.trim());
       setToken('');
       setSaved(true);
       setError('');
@@ -43,8 +47,13 @@ export default function DnsPage() {
     }
   };
   return (
-    <NodePage name="dns" loading={q.loading} error={q.error} refresh={q.refresh}>
-      <JobProgress />
+    <NodePage
+      name="dns"
+      loading={q.loading}
+      refreshing={q.refreshing}
+      error={q.error}
+      refresh={q.refresh}
+    >
       {q.data ? (
         <>
           <Section title={t('dns.records')}>
@@ -106,20 +115,28 @@ export default function DnsPage() {
           disabled={pending}
           onPress={() => {
             setPending(true);
-            setError('');
+            setRenewalError('');
             void api
               .configuration()
               .then((view) => api.preview(view.config))
               .then(setRenewal)
-              .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+              .catch((e) => setRenewalError(e instanceof Error ? e.message : String(e)))
               .finally(() => setPending(false));
           }}
         >
-          {t('dns.renewalPlan')}
+          {t('common.preview')}
         </Action>
+        {renewalError && (
+          <AlertBanner
+            icon="!"
+            tone="danger"
+            title={t('common.failed')}
+            description={renewalError}
+          />
+        )}
       </Section>
       {renewal ? (
-        <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+        <Suspense fallback={<NodeLoading />}>
           <PlanReview
             key={renewal.plan}
             plan={renewal}
@@ -149,19 +166,24 @@ export default function DnsPage() {
           <TextField
             label={t('dns.zone')}
             value={zone}
+            error={zone && !validZone ? t('console.zoneError') : ''}
             placeholder={q.data?.zone ?? ''}
             onChange={(e) => setZone(e.target.value)}
           />
           <PasswordField
             label={t('dns.token')}
             purpose="new"
-            showLabel="显示"
-            hideLabel="隐藏"
+            showLabel={t('common.show')}
+            hideLabel={t('common.hide')}
             value={token}
             onChange={(e) => setToken(e.target.value)}
           />
           <div>
-            <Action type="submit" loading={pending} disabled={!zone || !token || pending}>
+            <Action
+              type="submit"
+              loading={pending}
+              disabled={!validZone || !token.trim() || pending}
+            >
               {t('dns.save')}
             </Action>
           </div>

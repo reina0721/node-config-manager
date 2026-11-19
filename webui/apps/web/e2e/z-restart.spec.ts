@@ -32,7 +32,7 @@ test('替换 CLI 后仍使用运行中的可信进程，受控重启撤销会话
   let dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '确认执行', exact: true }).click();
   await expect(dialog).toHaveCount(0, { timeout: 30000 });
-  await expect(page.getByText('操作已完成', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: '任务完成', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '重启管理 API', exact: true }).click();
   dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '确认执行', exact: true }).click();

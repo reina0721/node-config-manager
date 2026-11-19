@@ -36,10 +36,10 @@ export async function login(page: Page) {
 export async function navigate(page: Page, name: string) {
   if (await page.getByRole('button', { name: '导航', exact: true }).isVisible())
     await page.getByRole('button', { name: '导航', exact: true }).click();
-  await page.getByRole('link', { name, exact: true }).click();
+  await page.getByRole('list').getByRole('link', { name, exact: true }).click();
   await expect(
     page.getByRole('heading', {
-      name: name === '总览' ? '节点运行总览' : name,
+      name: name === '运行总览' ? '节点运行总览' : name,
       exact: true,
       level: 1,
     }),

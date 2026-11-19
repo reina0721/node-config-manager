@@ -706,6 +706,7 @@ function buildHostAdapterText(
   forwardGenerateStaticParams = false,
 ) {
   const lines = [
+    ...(kind === 'error' ? ["'use client';", ''] : []),
     `export { default } from ${JSON.stringify(surfaceShimSubpath(pluginDirName, routeRelDir, kind))};`,
   ];
   if (forwardGenerateStaticParams) {

@@ -14,7 +14,8 @@ import {
   type ProxyAccess,
   type NodeConfiguration,
 } from '../../../src/node-management';
-import { JobProgress, NodePage, TaskResult, useNodeQuery, useNodeText } from './common';
+import { NodePage, TaskResult, useNodeQuery, NodeLoading, useNodeText } from './common';
+import { EditorDrawer, EnabledBadge, ListFilters, useListFilters } from './collection-controls';
 import { protocols, toggle } from './catalogue-fields';
 const PlanReview = lazy(() => import('./plan-review'));
 const GroupForm = lazy(() =>
@@ -35,6 +36,8 @@ const RuleMatch = lazy(() =>
 const UpstreamForm = lazy(() =>
   import('./egress-forms').then((module) => ({ default: module.UpstreamForm })),
 );
+
+const emptyServices = () => Promise.resolve([]);
 
 type Kind = CatalogueEdit['kind'];
 const names = {
@@ -172,15 +175,28 @@ function managedRows(config: NodeConfiguration, kind: Kind): Row[] {
 export default function CataloguePage({ kind }: { kind: Kind }) {
   const api = useNodeManagement();
   const query = useNodeQuery(api.configuration);
-  const services = useNodeQuery(api.services);
+  const serviceView = useNodeQuery(kind === 'upstream' ? api.services : emptyServices);
+  const filters = useListFilters();
   const t = useNodeText();
   const [edit, setEdit] = useState<CatalogueEdit | null>(null);
+  const [baseline, setBaseline] = useState<{ base: string; edit: CatalogueEdit } | null>(null);
+  const stale = Boolean(baseline && query.data?.base !== baseline.base);
   const [group, setGroup] = useState<string | null>(null);
   const [plan, setPlan] = useState<ConfigPlan | null>(null);
   const [probe, setProbe] = useState<JobResult | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const config = query.data?.config;
+  const beginEdit = (draft: CatalogueEdit) => {
+    if (!query.data) return;
+    setEdit(draft);
+    setBaseline({ base: query.data.base, edit: draft });
+    setPlan(null);
+    setError('');
+  };
+  const visibleError = error && (
+    <AlertBanner icon="!" tone="danger" title={t('common.failed')} description={error} />
+  );
   const testUpstream = async (id: string) => {
     setBusy(true);
     setError('');
@@ -194,12 +210,12 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
     }
   };
   const preview = async (change: CatalogueEdit) => {
-    if (!query.data) return;
+    if (!baseline || stale) return;
     setBusy(true);
     setError('');
     setPlan(null);
     try {
-      setPlan(await api.previewCatalogue(change, query.data.base));
+      setPlan(await api.previewCatalogue(change, baseline.base));
       setEdit(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -236,7 +252,7 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
                 edit: null,
               },
               ...(['usque-warp', 'usque-cn'] as const).map((id) => {
-                const service = services.data?.find((item) => item.name === id);
+                const service = serviceView.data?.find((item) => item.name === id);
                 return {
                   id,
                   name: t(id === 'usque-warp' ? 'egress.warp' : 'egress.cn-warp'),
@@ -253,37 +269,33 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
     <NodePage
       name={names[kind]}
       loading={query.loading}
+      refreshing={query.refreshing || serviceView.refreshing}
       error={query.error}
       refresh={async () => {
-        await Promise.all([query.refresh(), services.refresh()]);
+        await Promise.all([query.refresh(), serviceView.refresh()]);
       }}
     >
-      <JobProgress />
       <TaskResult result={probe} />
-      {error && (
-        <AlertBanner icon="!" tone="danger" title={t('common.failed')} description={error} />
-      )}
+      {!edit && visibleError}
       {config && (
         <>
           <Section
             title={t('nav.' + names[kind])}
             action={
-              <Action
-                disabled={busy}
-                onPress={() => {
-                  setEdit(newItem(kind));
-                  setPlan(null);
-                  setGroup(null);
-                }}
-              >
+              <Action disabled={busy} onPress={() => beginEdit(newItem(kind))}>
                 {t('catalogue.add')}
               </Action>
             }
           >
+            <div className="px-5 py-3">
+              <ListFilters filters={filters} />
+            </div>
             <DataTable
               label={t('nav.' + names[kind])}
-              rows={rows}
-              emptyContent={t('common.empty')}
+              rows={rows.filter((row) =>
+                filters.matches(row.enabled, row.name, row.detail, row.id),
+              )}
+              emptyContent={t(filters.active ? 'console.noMatches' : 'common.empty')}
               columns={[
                 {
                   id: 'name',
@@ -295,7 +307,7 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
                 {
                   id: 'enabled',
                   label: t('nodes.status'),
-                  render: (row) => t(row.enabled ? 'common.enabled' : 'common.disabled'),
+                  render: (row) => <EnabledBadge enabled={row.enabled} />,
                 },
                 {
                   id: 'actions',
@@ -307,12 +319,10 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
                           variant="secondary"
                           disabled={busy}
                           onPress={() => {
-                            setEdit(row.edit);
-                            setGroup(null);
-                            setPlan(null);
+                            if (row.edit) beginEdit(row.edit);
                           }}
                         >
-                          {t('access.manage')}
+                          {t('console.edit')}
                         </Action>
                         {kind === 'upstream' && row.enabled && (
                           <Action
@@ -344,9 +354,58 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
               ]}
             />
           </Section>
-          <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+          <Suspense fallback={<NodeLoading />}>
             {edit?.value && (
-              <Section title={t('nav.' + names[kind])} contentInset>
+              <EditorDrawer
+                title={
+                  t(edit.id ? 'console.edit' : 'catalogue.add') + ' · ' + t('nav.' + names[kind])
+                }
+                description={t(names[kind] + '.description')}
+                dirty={JSON.stringify(edit) !== JSON.stringify(baseline?.edit)}
+                busy={busy}
+                onClose={() => {
+                  setEdit(null);
+                  setError('');
+                }}
+              >
+                {visibleError}
+                {stale && query.data && (
+                  <>
+                    <AlertBanner
+                      icon="!"
+                      tone="warning"
+                      title={t('console.staleDraft')}
+                      description={t('console.draftConflict')}
+                    />
+                    <Action
+                      variant="secondary"
+                      onPress={() => {
+                        const current = edit.id
+                          ? rows.find((row) => row.id === edit.id)?.edit
+                          : baseline?.edit;
+                        if (!current || !baseline || !query.data) return;
+                        const previous = Object.entries(baseline.edit.value ?? {});
+                        const changed = Object.fromEntries(
+                          Object.entries(edit.value ?? {}).filter(
+                            ([field, value]) =>
+                              JSON.stringify(value) !==
+                              JSON.stringify(previous.find(([name]) => name === field)?.[1]),
+                          ),
+                        );
+                        setEdit({
+                          ...edit,
+                          value: { ...current.value, ...changed },
+                        } as CatalogueEdit);
+                        setBaseline({ base: query.data.base, edit: current });
+                      }}
+                    >
+                      {t('console.rebaseDraft')}
+                    </Action>
+                    {edit.id && !rows.some((row) => row.id === edit.id) && (
+                      <p role="status">{t('common.unavailable')}</p>
+                    )}
+                  </>
+                )}
                 {edit.kind === 'host' && (
                   <HostForm
                     key={edit.id ?? 'new'}
@@ -398,26 +457,27 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
                   />
                 )}
                 <div className="mt-4 flex flex-wrap gap-3">
-                  <Action disabled={busy} onPress={() => void preview(edit)}>
+                  <Action
+                    loading={busy}
+                    disabled={busy || stale}
+                    onPress={() => void preview(edit)}
+                  >
                     {t('catalogue.preview')}
                   </Action>
                   {edit.id && (
                     <Action
                       variant="secondary"
-                      disabled={busy}
+                      disabled={busy || stale}
                       onPress={() => void preview({ id: edit.id, kind: edit.kind, value: null })}
                     >
                       {t('catalogue.delete')}
                     </Action>
                   )}
-                  <Action variant="secondary" disabled={busy} onPress={() => setEdit(null)}>
-                    {t('catalogue.cancel')}
-                  </Action>
                 </div>
-              </Section>
+              </EditorDrawer>
             )}
             {kind === 'rule' && <RuleMatch config={config} />}
-            {group && <Members key={group} id={group} />}
+            {group && <Members key={group} id={group} onClose={() => setGroup(null)} />}
             {plan && (
               <PlanReview
                 key={plan.plan}
@@ -435,29 +495,61 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
   );
 }
 
-function Members({ id }: { id: string }) {
+function Members({ id, onClose }: { id: string; onClose: () => void }) {
   const api = useNodeManagement();
   const query = useNodeQuery(api.proxyAccess);
   const t = useNodeText();
   return query.data ? (
-    <MemberEditor id={id} initial={query.data} />
+    <MemberEditor id={id} initial={query.data} onClose={onClose} />
   ) : (
-    <Section title={t('catalogue.members')} contentInset>
-      <p role="status">{query.error || t('common.loading')}</p>
-    </Section>
+    <EditorDrawer
+      title={t('catalogue.members')}
+      description={t('catalogue.membersRisk')}
+      dirty={false}
+      onClose={onClose}
+    >
+      {query.error ? (
+        <>
+          <AlertBanner
+            icon="!"
+            tone="danger"
+            title={t('common.failed')}
+            description={query.error}
+          />
+          <Action onPress={() => void query.refresh()}>{t('common.refresh')}</Action>
+        </>
+      ) : (
+        <NodeLoading kind="form" />
+      )}
+    </EditorDrawer>
   );
 }
 
-function MemberEditor({ id, initial }: { id: string; initial: ProxyAccess }) {
+function MemberEditor({
+  id,
+  initial,
+  onClose,
+}: {
+  id: string;
+  initial: ProxyAccess;
+  onClose: () => void;
+}) {
   const api = useNodeManagement();
   const t = useNodeText();
   const [members, setMembers] = useState(() =>
     initial.users.filter((user) => user.groups.includes(id)).map((user) => user.username),
   );
   const [error, setError] = useState('');
+  const [baseline, setBaseline] = useState(members);
+  const dirty = JSON.stringify([...baseline].sort()) !== JSON.stringify([...members].sort());
   const [saved, setSaved] = useState(false);
   return (
-    <Section title={t('catalogue.members')} contentInset>
+    <EditorDrawer
+      title={t('catalogue.members')}
+      description={t('catalogue.membersRisk')}
+      dirty={dirty}
+      onClose={onClose}
+    >
       {error && (
         <AlertBanner icon="!" tone="danger" title={t('common.failed')} description={error} />
       )}
@@ -483,10 +575,12 @@ function MemberEditor({ id, initial }: { id: string; initial: ProxyAccess }) {
         cancelLabel={t('common.cancel')}
         impact={null}
         failureMessage={t('common.failed')}
+        confirmDisabled={!dirty}
         onConfirm={async () => {
           setError('');
           try {
             await api.changeProxyAccess({ action: 'group-members', group: id, usernames: members });
+            setBaseline(members);
             setSaved(true);
           } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
@@ -494,6 +588,6 @@ function MemberEditor({ id, initial }: { id: string; initial: ProxyAccess }) {
           }
         }}
       />
-    </Section>
+    </EditorDrawer>
   );
 }

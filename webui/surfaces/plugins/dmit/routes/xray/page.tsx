@@ -1,22 +1,27 @@
 'use client';
-import Link from 'next/link';
+import { lazy, Suspense } from 'react';
 import { Section } from '@community-go/surface-foundation/layout';
-import { XrayPage } from '../../src/console-pages';
-import { useNodeText } from '../../src/common';
+import { ConsoleLink, NodeLoading, useNodeText } from '../../src/common';
+const XrayPage = lazy(() =>
+  import('../../src/console-pages').then(({ XrayPage }) => ({ default: XrayPage })),
+);
+
 export default function Page() {
   const t = useNodeText();
   return (
-    <XrayPage
-      links={
-        <Section title={t('xray.edit')} contentInset>
-          <div className="flex flex-wrap gap-4 font-semibold text-brand">
-            <Link href="/dmit/config">{t('nav.config')}</Link>
-            <Link href="/dmit/inbounds">{t('nav.inbounds')}</Link>
-            <Link href="/dmit/upstreams">{t('nav.upstreams')}</Link>
-            <Link href="/dmit/rules">{t('nav.rules')}</Link>
-          </div>
-        </Section>
-      }
-    />
+    <Suspense fallback={<NodeLoading />}>
+      <XrayPage
+        links={
+          <Section title={t('xray.edit')} contentInset>
+            <div className="flex flex-wrap gap-4 font-semibold text-brand">
+              <ConsoleLink to="dmit.config">{t('nav.config')}</ConsoleLink>
+              <ConsoleLink to="dmit.inbounds">{t('nav.inbounds')}</ConsoleLink>
+              <ConsoleLink to="dmit.upstreams">{t('nav.upstreams')}</ConsoleLink>
+              <ConsoleLink to="dmit.rules">{t('nav.rules')}</ConsoleLink>
+            </div>
+          </Section>
+        }
+      />
+    </Suspense>
   );
 }

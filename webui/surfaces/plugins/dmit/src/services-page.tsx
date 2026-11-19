@@ -4,22 +4,20 @@ import { Section } from '@community-go/surface-foundation/layout';
 import { DataTable } from '@community-go/ui-adapter/data-display';
 import { Badge } from '@community-go/ui-adapter/feedback';
 import { useNodeManagement, type JobResult } from '../../../src/node-management';
-import {
-  NodePage,
-  OperationButton,
-  TaskResult,
-  JobProgress,
-  useNodeQuery,
-  useNodeText,
-} from './common';
+import { NodePage, OperationButton, TaskResult, useNodeQuery, useNodeText } from './common';
 export default function ServicesPage() {
   const api = useNodeManagement();
   const q = useNodeQuery(api.services, 10000);
   const t = useNodeText();
   const [result, setResult] = useState<JobResult | null>(null);
   return (
-    <NodePage name="services" loading={q.loading} error={q.error} refresh={q.refresh}>
-      <JobProgress />
+    <NodePage
+      name="services"
+      loading={q.loading}
+      refreshing={q.refreshing}
+      error={q.error}
+      refresh={q.refresh}
+    >
       <Section title={t('services.title')}>
         <DataTable
           label={t('services.title')}
@@ -38,14 +36,24 @@ export default function ServicesPage() {
               render: (s) => (
                 <Badge
                   tone={
-                    s.state?.ActiveState === 'active'
-                      ? 'success'
-                      : s.enabled
-                        ? 'warning'
-                        : 'neutral'
+                    s.state?.ActiveState === 'failed'
+                      ? 'danger'
+                      : s.state?.ActiveState === 'active'
+                        ? 'success'
+                        : s.enabled
+                          ? 'warning'
+                          : 'neutral'
                   }
                 >
-                  {s.state?.ActiveState ?? t('common.unavailable')}
+                  {t(
+                    s.state?.ActiveState === 'active'
+                      ? 'console.running'
+                      : s.state?.ActiveState === 'failed'
+                        ? 'console.failed'
+                        : s.state?.ActiveState === 'inactive'
+                          ? 'console.inactive'
+                          : 'common.unavailable',
+                  )}
                 </Badge>
               ),
             },

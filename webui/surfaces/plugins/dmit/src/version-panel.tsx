@@ -90,6 +90,12 @@ export default function VersionPanel({
         <TextField
           label={t('operations.upgradeVersion')}
           value={version}
+          error={
+            version && (!valid || compareVersions(version, minimum) < 0)
+              ? t('console.versionError')
+              : ''
+          }
+
           onChange={(e) => setVersion(e.target.value)}
         />
         <OperationButton

@@ -1,8 +1,8 @@
 'use client';
-import { useState, lazy, Suspense } from 'react';
+import { useCallback, useState, lazy, Suspense } from 'react';
 const PlanReview = lazy(() => import('./plan-review'));
 import { Section } from '@community-go/surface-foundation/layout';
-import { DataTable } from '@community-go/ui-adapter/data-display';
+import { DataTable, TabsView } from '@community-go/ui-adapter/data-display';
 import { PasswordField } from '@community-go/ui-adapter/form-field';
 import { Action } from '@community-go/ui-adapter/action';
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
@@ -13,9 +13,9 @@ import {
   Details,
   OperationButton,
   TaskResult,
-  JobProgress,
   Timestamp,
   useNodeQuery,
+  NodeLoading,
   useNodeText,
 } from './common';
 const VersionPanel = lazy(() => import('./version-panel'));
@@ -25,6 +25,7 @@ export default function OperationsPage() {
   const t = useNodeText();
   const [result, setResult] = useState<JobResult | null>(null);
   const versions = useNodeQuery(api.versions);
+  const [jobId, setJobId] = useState<string>();
   const [restore, setRestore] = useState<ConfigPlan | null>(null);
   const [selected, setSelected] = useState('');
   const [token, setToken] = useState('');
@@ -37,13 +38,13 @@ export default function OperationsPage() {
   return (
     <NodePage
       name="operations"
-      loading={q.loading}
+      loading={q.loading && versions.loading}
+      refreshing={q.refreshing || versions.refreshing}
       error={q.error}
       refresh={async () => {
         await Promise.all([q.refresh(), versions.refresh()]);
       }}
     >
-      <JobProgress />
       {d?.recovery_required ? (
         <AlertBanner
           icon="!"
@@ -52,6 +53,16 @@ export default function OperationsPage() {
           description={t('overview.recoveryDescription')}
         />
       ) : null}
+      <Suspense fallback={<NodeLoading />}>
+        <VersionPanel
+          data={versions.data}
+          error={versions.error}
+          onResult={(result) => {
+            done(result);
+            void versions.refresh();
+          }}
+        />
+      </Suspense>
       <Section title={t('operations.actions')} contentInset>
         <div className="flex flex-wrap gap-3">
           <OperationButton
@@ -103,19 +114,9 @@ export default function OperationsPage() {
           />
         </div>
       </Section>
-      <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
-        <VersionPanel
-          data={versions.data}
-          error={versions.error}
-          onResult={(result) => {
-            done(result);
-            void versions.refresh();
-          }}
-        />
-      </Suspense>
       <TaskResult result={result} />
       {restore ? (
-        <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+        <Suspense fallback={<NodeLoading />}>
           <PlanReview
             key={restore.plan}
             plan={restore}
@@ -168,92 +169,170 @@ export default function OperationsPage() {
           }
         }}
       />
-      <Section title={t('operations.history')}>
-        <DataTable
-          label={t('operations.history')}
-          rows={(d?.jobs ?? []).map((j) => ({ ...j }))}
-          emptyContent={t('operations.noJobs')}
-          columns={[
+
+      <Section id="operations-records" title={t('console.operationsRecords')} contentInset>
+        <TabsView
+          label={t('console.operationsRecords')}
+          variant="section"
+          items={[
             {
-              id: 'time',
-              label: t('operations.time'),
-              render: (j) => <Timestamp value={j.started} />,
+              id: 'history',
+              label: t('operations.history'),
+              content: (
+                <DataTable
+                  label={t('operations.history')}
+                  rows={(d?.jobs ?? []).map((j) => ({ ...j }))}
+                  emptyContent={t('operations.noJobs')}
+                  columns={[
+                    {
+                      id: 'time',
+                      label: t('operations.time'),
+                      render: (j) => <Timestamp value={j.started} />,
+                    },
+                    {
+                      id: 'operation',
+                      label: t('operations.operation'),
+                      rowHeader: true,
+                      render: (j) => j.operation,
+                    },
+                    {
+                      id: 'phase',
+                      label: t('common.phase'),
+                      render: (j) => (
+                        <Badge tone={j.ok === false ? 'danger' : j.finished ? 'success' : 'info'}>
+                          {t(
+                            j.ok === false
+                              ? 'console.failed'
+                              : j.finished
+                                ? 'console.completed'
+                                : 'console.running',
+                          )}
+                          {' · '}
+                          {j.phase}
+                        </Badge>
+                      ),
+                    },
+                    {
+                      id: 'details',
+                      label: t('common.details'),
+                      render: (job) =>
+                        job.operation !== 'subscription-rotate' ? (
+                          <Action variant="quiet" onPress={() => setJobId(job.id)}>
+                            {t('console.viewDetails')}
+                          </Action>
+                        ) : null,
+                    },
+                  ]}
+                />
+              ),
             },
             {
-              id: 'operation',
-              label: t('operations.operation'),
-              rowHeader: true,
-              render: (j) => j.operation,
+              id: 'backups',
+              label: t('operations.backups'),
+              content: (
+                <DataTable
+                  label={t('operations.backups')}
+                  rows={d?.backups ?? []}
+                  emptyContent={t('operations.noBackups')}
+                  columns={[
+                    {
+                      id: 'id',
+                      label: t('operations.id'),
+                      rowHeader: true,
+                      render: (b) => <span className="break-all font-mono text-xs">{b.id}</span>,
+                    },
+                    {
+                      id: 'created',
+                      label: t('operations.time'),
+                      render: (b) => <Timestamp value={b.created} />,
+                    },
+                    {
+                      id: 'restore',
+                      label: t('services.actions'),
+                      render: (b) => (
+                        <Action
+                          variant="secondary"
+                          disabled={!b.restorable}
+                          onPress={() => {
+                            setSelected(b.id);
+                            setRestoreError('');
+                          }}
+                        >
+                          {t(b.restorable ? 'operations.restore' : 'operations.invalidSnapshot')}
+                        </Action>
+                      ),
+                    },
+                  ]}
+                />
+              ),
             },
             {
-              id: 'phase',
-              label: t('common.phase'),
-              render: (j) => (
-                <Badge tone={j.ok === false ? 'danger' : j.finished ? 'success' : 'info'}>
-                  {j.phase}
-                </Badge>
+              id: 'audit',
+              label: t('operations.audit'),
+              content: (
+                <DataTable
+                  label={t('operations.audit')}
+                  rows={(d?.audit ?? []).map((a, i) => ({ ...a, id: String(i) }))}
+                  emptyContent={t('common.empty')}
+                  columns={[
+                    {
+                      id: 'time',
+                      label: t('operations.time'),
+                      render: (a) => <Timestamp value={a.time} />,
+                    },
+                    {
+                      id: 'op',
+                      label: t('operations.operation'),
+                      rowHeader: true,
+                      render: (a) => a.operation,
+                    },
+                    { id: 'outcome', label: t('operations.outcome'), render: (a) => a.outcome },
+                  ]}
+                />
               ),
             },
           ]}
         />
       </Section>
-      <Section title={t('operations.backups')}>
-        <DataTable
-          label={t('operations.backups')}
-          rows={d?.backups ?? []}
-          emptyContent={t('operations.noBackups')}
-          columns={[
-            {
-              id: 'id',
-              label: t('operations.id'),
-              rowHeader: true,
-              render: (b) => <span className="break-all font-mono text-xs">{b.id}</span>,
-            },
-            {
-              id: 'created',
-              label: t('operations.time'),
-              render: (b) => <Timestamp value={b.created} />,
-            },
-            {
-              id: 'restore',
-              label: t('services.actions'),
-              render: (b) => (
-                <Action
-                  variant="secondary"
-                  disabled={!b.restorable}
-                  onPress={() => {
-                    setSelected(b.id);
-                    setRestoreError('');
-                  }}
-                >
-                  {t(b.restorable ? 'operations.restore' : 'operations.invalidSnapshot')}
-                </Action>
-              ),
-            },
-          ]}
-        />
-      </Section>
-      <Section title={t('operations.audit')}>
-        <DataTable
-          label={t('operations.audit')}
-          rows={(d?.audit ?? []).map((a, i) => ({ ...a, id: String(i) }))}
-          emptyContent={t('common.empty')}
-          columns={[
-            {
-              id: 'time',
-              label: t('operations.time'),
-              render: (a) => <Timestamp value={a.time} />,
-            },
-            {
-              id: 'op',
-              label: t('operations.operation'),
-              rowHeader: true,
-              render: (a) => a.operation,
-            },
-            { id: 'outcome', label: t('operations.outcome'), render: (a) => a.outcome },
-          ]}
-        />
-      </Section>
+      {jobId && <JobDetails key={jobId} id={jobId} close={() => setJobId(undefined)} />}
     </NodePage>
+  );
+}
+
+function JobDetails({ id, close }: { id: string; close: () => void }) {
+  const { jobDetails } = useNodeManagement();
+  const t = useNodeText();
+  const load = useCallback(() => jobDetails(id), [id, jobDetails]);
+  const details = useNodeQuery(load, 5000);
+  return (
+    <Section
+      title={t('common.details')}
+      contentInset
+      action={
+        <Action variant="quiet" onPress={close}>
+          {t('common.cancel')}
+        </Action>
+      }
+    >
+      {details.loading && <NodeLoading />}
+      {details.error && (
+        <AlertBanner
+          icon="!"
+          tone="danger"
+          title={t('common.error')}
+          description={details.error}
+          actionLabel={t('common.retry')}
+          onAction={() => void details.refresh()}
+        />
+      )}
+      {details.data && (
+        <>
+          <p className="mb-3 break-all text-sm">
+            {details.data.operation} · {details.data.phase} · {id}
+          </p>
+          <TaskResult result={details.data.result} />
+        </>
+      )}
+    </Section>
   );
 }

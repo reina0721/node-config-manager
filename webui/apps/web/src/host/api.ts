@@ -88,9 +88,21 @@ export function createAdminApi(
       clearTimeout(timeout);
     }
   }
-  async function watch(path: string, body: unknown): Promise<JobResult> {
+  async function watch(path: string, body: unknown, onAccepted?: () => void): Promise<JobResult> {
     const node = selected;
     const task = await request(path, taskSchema, body, node);
+    if (node === selected) {
+      onJob({
+        id: task.job,
+        operation: path,
+        phase: 'queued',
+        started: Date.now() / 1000,
+        finished: null,
+        ok: null,
+        result: null,
+      });
+    }
+    onAccepted?.();
     for (;;) {
       const job = await request('jobs/' + task.job, jobSchema, undefined, node);
       const progressResult = job.result ? { ...job.result } : null;
@@ -143,6 +155,11 @@ export function createAdminApi(
     services: async () =>
       (await request('services', z.object({ services: z.array(serviceSchema) }))).services,
     operations: () => request('operations', operationsViewSchema),
+    jobDetails: async (id) => {
+      const job = await request('jobs/' + encodeURIComponent(id), jobSchema);
+      if (job.result) delete job.result.token;
+      return job;
+    },
     unlock: async (token) =>
       (await request('unlock', z.object({ unlock: z.string() }), { token })).unlock,
     preview: (config, unlock) =>
@@ -170,7 +187,7 @@ export function createAdminApi(
     check: (plan) => watch('config/check', { plan }),
     prepareDeployment: (plan, options) => watch('config/deploy-preview', { plan, options }),
     apply: (plan, confirm) => watch('config/apply', { plan, confirm }),
-    operate: (input) => watch('operations', input),
+    operate: (input, onAccepted) => watch('operations', input, onAccepted),
     credentials: async (zone, token) => {
       await request('credentials', z.object({ saved: z.boolean() }), { zone, token });
     },

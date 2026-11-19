@@ -24,4 +24,9 @@ export const navigationGroupAliases: readonly NavigationGroupAlias[] = [
   { groupId: 'administration', labelKey: 'shellNavigationGroups.administration', order: 1 },
   { groupId: 'system', labelKey: 'shellNavigationGroups.system', order: 2 },
   { groupId: 'development', labelKey: 'shellNavigationGroups.development', order: 3 },
+  { groupId: 'overview', labelKey: 'shellNavigationGroups.overview', order: 4 },
+  { groupId: 'access', labelKey: 'shellNavigationGroups.access', order: 5 },
+  { groupId: 'traffic', labelKey: 'shellNavigationGroups.traffic', order: 6 },
+  { groupId: 'operations', labelKey: 'shellNavigationGroups.operations', order: 7 },
+  { groupId: 'settings', labelKey: 'shellNavigationGroups.settings', order: 8 },
 ] as const;

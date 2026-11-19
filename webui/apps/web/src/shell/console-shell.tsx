@@ -1,7 +1,12 @@
 'use client';
 import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import Link, { useLinkStatus } from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
+import { resolveRouteTarget } from '@community-go/plugin-framework';
+import {
+  PluginNavigationProvider,
+  type PluginNavigationPort,
+} from '@community-go/plugin-framework/plugin';
 import { useFrontendTranslation } from '@community-go/i18n';
 import { generatedSurfaceRegistry } from '@community-go/surface/generated/composition';
 import { useNodeManagement } from '@community-go/surface/node-management';
@@ -15,14 +20,41 @@ import { ShellNavigation, ShellRoot } from '@community-go/surface-foundation/she
 import { Action } from '@community-go/ui-adapter/action';
 import { SkipLink } from '@community-go/ui-adapter/accessibility';
 import { Badge } from '@community-go/ui-adapter/feedback';
+import { RouteTransition } from '../host/route-transition';
 import { useConsoleSession } from '../host/console-runtime';
+function normalized(path: string) {
+  const clean = path.replace(/^\/admin(?=\/|$)/, '').replace(/\/+$/, '');
+  return clean || '/dmit';
+}
+
+function LinkPending() {
+  const { pending } = useLinkStatus();
+  const { t } = useFrontendTranslation();
+  return pending ? (
+    <span role="status" className="text-xs text-ink-muted">
+      {t('nodeShell.switching')}
+    </span>
+  ) : null;
+}
+
 const ConsoleSearch = lazy(() => import('./console-search'));
 export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
   const { t } = useFrontendTranslation();
   const pathname = usePathname();
+  const router = useRouter();
   const session = useConsoleSession();
-  const { selectedNode } = useNodeManagement();
+  const { selectedNode, job } = useNodeManagement();
+  const jobStatus =
+    job &&
+    t(
+      job.finished === null
+        ? 'nodeShell.taskPending'
+        : job.ok
+          ? 'nodeShell.taskDone'
+          : 'nodeShell.taskFailed',
+    );
   const groups = useMemo(() => convertRegistryToShellNavigation(generatedSurfaceRegistry), []);
+  const [forwardTarget, setForwardTarget] = useState<string | null>(null);
   const [mobile, setMobile] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -33,6 +65,10 @@ export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
           (item) =>
             t(item.labelKey).toLowerCase().includes(query) ||
             item.id.toLowerCase().includes(query) ||
+            (item.id === 'dmit.nodes' &&
+              t('nodeShell.legacySubscriptions').toLowerCase().includes(query)) ||
+            (item.id === 'dmit.fleet' &&
+              t('nodeShell.legacyFleet').toLowerCase().includes(query)) ||
             (item.kind === 'branch' &&
               item.children.some((child) => t(child.labelKey).toLowerCase().includes(query))),
         );
@@ -40,7 +76,47 @@ export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
         return first ? [{ ...group, items: [first, ...rest] as typeof group.items }] : [];
       })
     : groups;
-  const path = pathname.replace(/^\/admin(?=\/|$)/, '') || '/dmit';
+  const path = normalized(pathname);
+  const [previousPath, setPreviousPath] = useState(path);
+  const [direction, setDirection] = useState<string | null>(null);
+  if (path !== previousPath) {
+    setPreviousPath(path);
+    setDirection(forwardTarget === path ? path : null);
+    setForwardTarget(null);
+  }
+  const navigate = (href: string) => {
+    const destination = normalized(href.split(/[?#]/, 1)[0] ?? href);
+    if (destination !== path) setForwardTarget(destination);
+  };
+  const navigationPort: PluginNavigationPort = {
+    resolveHref: (target) => {
+      const result = resolveRouteTarget(generatedSurfaceRegistry, target);
+      if (result.diagnostics.length > 0) throw new Error(result.diagnostics[0]?.message);
+      return result.href;
+    },
+    navigate: (href) => {
+      navigate(href);
+      router.push(href);
+    },
+    replace: (href) => {
+      navigate(href);
+      router.replace(href);
+    },
+    renderLink: ({ href, children, className, ariaLabel, title, onNavigate }) => (
+      <Link
+        href={href}
+        className={className}
+        aria-label={ariaLabel}
+        title={title}
+        onNavigate={() => {
+          navigate(href);
+          onNavigate?.();
+        }}
+      >
+        {children}
+      </Link>
+    ),
+  };
   const navigation = (close?: () => void) => (
     <div className="grid gap-3">
       <Suspense fallback={<p role="status">{t('nodeShell.loadingSearch')}</p>}>
@@ -57,10 +133,14 @@ export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
                 href={p.href}
                 className={p.className}
                 aria-current={p.current ? 'page' : undefined}
-                {...(p.onNavigate ? { onClick: p.onNavigate } : {})}
+                onNavigate={() => {
+                  navigate(p.href);
+                  p.onNavigate?.();
+                }}
                 key={p.href}
               >
                 {p.children}
+                <LinkPending />
               </Link>
             ),
           }}
@@ -80,11 +160,15 @@ export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
     </div>
   );
   return (
-    <>
+    <PluginNavigationProvider port={navigationPort}>
       <SkipLink href="#main-content" label={t('nodeShell.skip')} />
       <ShellRoot>
         <aside className="hidden border-r border-border bg-surface p-5 lg:sticky lg:top-0 lg:block lg:h-screen lg:overflow-y-auto">
-          <Link href="/dmit" className="flex items-center gap-3 text-ink">
+          <Link
+            href="/dmit"
+            onNavigate={() => navigate('/dmit')}
+            className="flex items-center gap-3 text-ink"
+          >
             <span className="grid size-10 place-items-center rounded-control bg-brand text-lg font-bold text-on-brand">
               D
             </span>
@@ -100,7 +184,7 @@ export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
           </div>
         </aside>
         <div className="min-w-0">
-          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-surface px-6 py-4">
+          <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b border-border bg-surface px-6 py-4">
             <div className="flex items-center gap-3">
               <div className="lg:hidden">
                 <Action variant="quiet" onPress={() => setMobile(true)}>
@@ -122,12 +206,31 @@ export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
               {selectedNode.id === 'local' ? (
                 <span className="text-sm text-ink-muted">{t('nodeShell.context')}</span>
               ) : (
-                <Link href="/dmit/fleet" className="text-sm font-semibold text-brand">
+                <Link
+                  href="/dmit/fleet"
+                  onNavigate={() => navigate('/dmit/fleet')}
+                  className="text-sm font-semibold text-brand"
+                >
                   {t('nodeShell.remote')} {selectedNode.name}
                 </Link>
               )}
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {job && jobStatus && (
+                <Link
+                  href="/dmit/operations"
+                  onNavigate={() => navigate('/dmit/operations')}
+                  aria-label={jobStatus}
+                  className="rounded-control focus-visible:outline-brand"
+                >
+                  <span role="status">
+                    <Badge tone={job.finished === null ? 'info' : job.ok ? 'success' : 'danger'}>
+                      {jobStatus}
+                      {job.finished === null && ' · ' + job.phase}
+                    </Badge>
+                  </span>
+                </Link>
+              )}
               <Action variant="quiet" onPress={session.toggleTheme}>
                 {t(session.theme === 'light' ? 'nodeShell.dark' : 'nodeShell.light')}
               </Action>
@@ -148,15 +251,13 @@ export function ConsoleShell({ children }: Readonly<{ children: ReactNode }>) {
               {error}
             </p>
           ) : null}
-          <main
-            id="main-content"
-            className="surface-route-content mx-auto max-w-7xl p-5 sm:p-8"
-            tabIndex={-1}
-          >
-            {children}
+          <main id="main-content" className="mx-auto max-w-7xl p-5 sm:p-8" tabIndex={-1}>
+            <RouteTransition pathname={path} forwardTarget={direction} node={selectedNode.id}>
+              {children}
+            </RouteTransition>
           </main>
         </div>
       </ShellRoot>
-    </>
+    </PluginNavigationProvider>
   );
 }

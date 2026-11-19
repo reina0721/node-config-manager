@@ -31,6 +31,7 @@ export function HostForm({
       label={label(field)}
       {...(hint ? { hint } : {})}
       value={data[field]}
+      error={field === 'remark' && !data.remark.trim() ? t('console.requiredField') : ''}
       onChange={(e) => update({ ...data, [field]: e.target.value })}
     />
   );
@@ -38,6 +39,7 @@ export function HostForm({
     <TextField
       label={label(field)}
       defaultValue={data[field].join(', ')}
+      error={field === 'addresses' && !data.addresses.length ? t('console.requiredField') : ''}
       onChange={(e) => update({ ...data, [field]: split(e.target.value) })}
     />
   );
@@ -46,6 +48,11 @@ export function HostForm({
       label={label(field)}
       {...(hint ? { hint } : {})}
       value={String(data[field])}
+      error={
+        field === 'port' && (!Number.isInteger(data.port) || data.port < 0 || data.port > 65535)
+          ? t('console.portError')
+          : ''
+      }
       onChange={(e) => update({ ...data, [field]: Number(e.target.value) })}
     />
   );
@@ -177,6 +184,7 @@ export function InboundForm({
       <TextField
         label={t('catalogue.remark')}
         value={data.remark}
+        error={!data.remark.trim() ? t('console.requiredField') : ''}
         onChange={(e) => update({ ...data, remark: e.target.value })}
       />
       <SelectField
@@ -191,12 +199,18 @@ export function InboundForm({
       <TextField
         label={t('catalogue.path')}
         value={data.path}
+        error={!data.path.startsWith('/') ? t('console.pathError') : ''}
         onChange={(e) => update({ ...data, path: e.target.value })}
       />
       <TextField
         label={t('catalogue.port')}
         disabled={!reality}
         value={String(reality ? data.port : httpsPort)}
+        error={
+          reality && (!Number.isInteger(data.port) || data.port < 1 || data.port > 65535)
+            ? t('console.portError')
+            : ''
+        }
         onChange={(e) => update({ ...data, port: Number(e.target.value) })}
       />
       <SwitchField
@@ -224,6 +238,7 @@ export function GroupForm({
       <TextField
         label={t('catalogue.groupName')}
         value={data.name}
+        error={!data.name.trim() ? t('console.requiredField') : ''}
         onChange={(e) => update({ ...data, name: e.target.value })}
       />
       <TextField

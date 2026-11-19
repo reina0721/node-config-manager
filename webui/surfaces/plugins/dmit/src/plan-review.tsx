@@ -53,7 +53,21 @@ export default function PlanReview({
       {plan ? (
         <>
           <Section title={t('config.review')} description={plan.risk}>
-            <div className="p-5">
+            <div className="grid gap-4 p-5">
+              <ol
+                className="flex flex-wrap items-center gap-3"
+                aria-label={t('console.reviewSteps')}
+              >
+                <li>
+                  <Badge tone="success">1. {t('console.previewDone')}</Badge>
+                </li>
+                <li aria-current={checked ? undefined : 'step'}>
+                  <Badge tone={checked ? 'success' : 'info'}>2. {t('console.checkStep')}</Badge>
+                </li>
+                <li aria-current={checked ? 'step' : undefined}>
+                  <Badge tone={checked ? 'info' : 'neutral'}>3. {t('console.applyStep')}</Badge>
+                </li>
+              </ol>
               <Details
                 label={t('config.review')}
                 items={[
@@ -104,8 +118,10 @@ export default function PlanReview({
               ]}
             />
             <div className="p-5">
-              <h3 className="mb-3 font-semibold">{t('config.diff')}</h3>
-              <Code>{plan.diff}</Code>
+              <details>
+                <summary className="cursor-pointer font-semibold">{t('config.diff')}</summary>
+                <Code>{plan.diff}</Code>
+              </details>
             </div>
           </Section>
           <Section

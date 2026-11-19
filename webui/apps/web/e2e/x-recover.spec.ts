@@ -25,6 +25,9 @@ test('CLI 卸载中断可由实际 Web 恢复入口识别并恢复', async ({ pa
   const dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '确认执行', exact: true }).click();
   await expect(dialog).toHaveCount(0, { timeout: 90000 });
+  await expect(page.getByRole('link', { name: '任务完成', exact: true })).toBeVisible({
+    timeout: 90000,
+  });
   await expect(recover).toBeDisabled();
   fixtureCommand(['test', '!', '-e', '/var/lib/dmit-node/uninstall.json']);
   fixtureCommand(['test', '!', '-e', '/var/lib/dmit-node/transaction.json']);

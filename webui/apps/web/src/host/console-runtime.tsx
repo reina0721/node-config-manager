@@ -1,14 +1,6 @@
 'use client';
 /* eslint-disable react-refresh/only-export-components */
-import {
-  createContext,
-  Fragment,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   createFrontendI18n,
   FrontendI18nProvider,
@@ -147,7 +139,13 @@ export function ConsoleRuntime({ children }: Readonly<{ children: ReactNode }>) 
   }, [theme]);
   useEffect(() => {
     const q = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const update = () => setReduced(q.matches);
+    const update = () => {
+      setReduced(q.matches);
+      const style = document.documentElement.dataset;
+      style.motionMode = q.matches ? 'reduced' : 'full';
+      style.motionScreen = q.matches ? 'off' : 'on';
+      style.motionReveal = q.matches ? 'off' : 'on';
+    };
     update();
     q.addEventListener('change', update);
     return () => q.removeEventListener('change', update);
@@ -209,7 +207,7 @@ export function ConsoleRuntime({ children }: Readonly<{ children: ReactNode }>) 
                 ) : null}
               </>
             ) : (
-              <Fragment key={selectedNode.id}>{children}</Fragment>
+              children
             )}
           </NodeManagementProvider>
         </SessionContext.Provider>

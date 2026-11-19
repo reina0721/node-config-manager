@@ -1,29 +1,28 @@
 'use client';
 import { lazy, Suspense } from 'react';
 import { useNodeManagement } from '../../../src/node-management';
-import { NodePage, JobProgress, useNodeQuery, useNodeText } from './common';
+import { NodePage, useNodeQuery, NodeLoading } from './common';
 const ProxyAccessPanel = lazy(() => import('./proxy-access-panel'));
 
 export default function ClientsPage() {
-  const t = useNodeText();
   const api = useNodeManagement();
   const access = useNodeQuery(api.proxyAccess, 15000);
-  const config = useNodeQuery(api.configuration);
+  const config = useNodeQuery(api.panel);
   return (
     <NodePage
       name="clients"
       loading={access.loading || config.loading}
+      refreshing={access.refreshing || config.refreshing}
       error={access.error || config.error}
       refresh={async () => {
         await Promise.all([access.refresh(), config.refresh()]);
       }}
     >
-      <JobProgress />
       {access.data && (
-        <Suspense fallback={<p role="status">{t('common.loading')}</p>}>
+        <Suspense fallback={<NodeLoading kind="collection" />}>
           <ProxyAccessPanel
             data={access.data}
-            subscriptions={config.data?.config.distribution?.enabled ?? false}
+            subscriptions={config.data?.subscription_enabled ?? false}
             refresh={access.refresh}
           />
         </Suspense>

@@ -54,6 +54,7 @@ test('界面高级修改与快照恢复经过真实检查、两次确认和运�
   );
   expect(actual.config.clients).toEqual(changed.clients);
   await navigate(page, '运维中心');
+  await page.getByRole('tab', { name: '配置快照', exact: true }).click();
   const snapshots = page.getByRole('grid', { name: '配置快照', exact: true });
   await snapshots
     .getByRole('row')

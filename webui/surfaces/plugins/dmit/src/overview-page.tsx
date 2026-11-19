@@ -3,17 +3,33 @@ import { Section } from '@community-go/surface-foundation/layout';
 import { Card, CardContent, CardHeader } from '@community-go/ui-adapter/card';
 import { ProgressMeter } from '@community-go/ui-adapter/progress-meter';
 import { AlertBanner, Badge } from '@community-go/ui-adapter/feedback';
-import { DataTable } from '@community-go/ui-adapter/data-display';
 import { useNodeManagement } from '../../../src/node-management';
-import { NodePage, Details, bytes, number, Timestamp, useNodeQuery, useNodeText } from './common';
+import { NodePage, Details, bytes, number, ConsoleLink, useNodeQuery, useNodeText } from './common';
 export default function OverviewPage() {
   const api = useNodeManagement();
   const q = useNodeQuery(api.overview, 5000);
+  const entrances = useNodeQuery(api.nodes);
   const t = useNodeText();
   const d = q.data;
   const m = d?.metrics;
+  const healthy =
+    d?.services.filter((service) => service.enabled && service.state?.ActiveState === 'active') ??
+    [];
+  const anomalies =
+    d?.services.filter(
+      (service) => service.enabled !== (service.state?.ActiveState === 'active'),
+    ) ?? [];
+  const configured = d?.services.filter((service) => service.enabled).length ?? 0;
   return (
-    <NodePage name="overview" loading={q.loading} error={q.error} refresh={q.refresh}>
+    <NodePage
+      name="overview"
+      loading={q.loading}
+      refreshing={q.refreshing || entrances.refreshing}
+      error={q.error}
+      refresh={async () => {
+        await Promise.all([q.refresh(), entrances.refresh()]);
+      }}
+    >
       {d?.recovery_required ? (
         <AlertBanner
           icon="!"
@@ -86,75 +102,49 @@ export default function OverviewPage() {
               </CardContent>
             </Card>
           </div>
-          <Section title={t('overview.network')}>
-            <DataTable
-              label={t('overview.network')}
-              rows={(m.network ?? []).map((n) => ({ ...n, id: n.interface }))}
-              emptyContent={t('common.unavailable')}
-              columns={[
-                {
-                  id: 'interface',
-                  label: t('overview.interface'),
-                  rowHeader: true,
-                  render: (r) => r.interface,
-                },
-                { id: 'rx', label: t('overview.rx'), render: (r) => bytes(r.rx_bytes) },
-                { id: 'tx', label: t('overview.tx'), render: (r) => bytes(r.tx_bytes) },
-                {
-                  id: 'rxRate',
-                  label: t('overview.rxRate'),
-                  render: (r) =>
-                    r.rx_bytes_per_second === null ? '—' : bytes(r.rx_bytes_per_second) + '/s',
-                },
-                {
-                  id: 'txRate',
-                  label: t('overview.txRate'),
-                  render: (r) =>
-                    r.tx_bytes_per_second === null ? '—' : bytes(r.tx_bytes_per_second) + '/s',
-                },
-              ]}
-            />
-            <p className="px-5 py-3 text-xs text-ink-muted">
-              {t('overview.source')}: {m.source} · <Timestamp value={m.sample_unix} />
-            </p>
-          </Section>
         </>
       ) : null}
       {d ? (
         <>
-          <Section title={t('overview.services')}>
-            <DataTable
-              label={t('overview.services')}
-              rows={d.services.map((s) => ({ ...s, id: s.name }))}
-              emptyContent={t('common.empty')}
-              columns={[
-                { id: 'name', label: t('services.name'), rowHeader: true, render: (s) => s.name },
-                {
-                  id: 'state',
-                  label: t('services.active'),
-                  render: (s) => (
-                    <Badge
-                      tone={
-                        !s.enabled
-                          ? s.state?.ActiveState === 'active'
-                            ? 'warning'
-                            : 'neutral'
-                          : s.state?.ActiveState === 'active'
-                            ? 'success'
-                            : 'warning'
-                      }
-                    >
-                      {!s.enabled
-                        ? s.state?.ActiveState === 'active'
-                          ? t('overview.unexpectedService')
-                          : t('common.disabled')
-                        : (s.state?.ActiveState ?? t('common.unavailable'))}
-                    </Badge>
-                  ),
-                },
-              ]}
-            />
+          <Section title={t('overview.services')} contentInset>
+            <div className="grid gap-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <Badge tone={anomalies.length ? 'warning' : 'success'}>
+                  {healthy.length} / {configured} · {t('console.runningServices')}
+                </Badge>
+                <ConsoleLink to="dmit.services">{t('nav.services')}</ConsoleLink>
+              </div>
+              {anomalies.length > 0 && (
+                <ul className="grid gap-2">
+                  {anomalies.map((service) => (
+                    <li key={service.name} className="flex flex-wrap items-center gap-2">
+                      <strong>{service.name}</strong>
+                      <Badge tone="warning">
+                        {t(service.enabled ? 'common.attention' : 'overview.unexpectedService')}
+                      </Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </Section>
+          {entrances.data && (
+            <Section
+              title={t('nodes.protocols')}
+              contentInset
+              action={<ConsoleLink to="dmit.nodes">{t('nav.nodes')}</ConsoleLink>}
+            >
+              <ul className="flex flex-wrap gap-3">
+                {entrances.data.protocols.map((protocol) => (
+                  <li key={protocol.name}>
+                    <Badge tone="info">
+                      {protocol.name} · {protocol.port}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
           <Section title={t('common.current')} contentInset>
             <Details
               label={t('common.current')}
@@ -170,6 +160,9 @@ export default function OverviewPage() {
                 ],
               ]}
             />
+            <div className="mt-4 flex flex-wrap gap-4">
+              <ConsoleLink to="dmit.network">{t('nav.network')}</ConsoleLink>
+            </div>
           </Section>
         </>
       ) : null}

@@ -60,6 +60,7 @@ export function UpstreamForm({
       <TextField
         label={label('name')}
         value={data.name}
+        error={!data.name.trim() ? t('console.requiredField') : ''}
         onChange={(e) => update({ ...data, name: e.target.value })}
       />
       <SelectField
@@ -80,11 +81,17 @@ export function UpstreamForm({
       <TextField
         label={label('address')}
         value={data.address}
+        error={!data.address.trim() ? t('console.requiredField') : ''}
         onChange={(e) => update({ ...data, address: e.target.value })}
       />
       <TextField
         label={t('catalogue.port')}
         value={String(data.port)}
+        error={
+          !Number.isInteger(data.port) || data.port < 1 || data.port > 65535
+            ? t('console.portError')
+            : ''
+        }
         onChange={(e) => update({ ...data, port: Number(e.target.value) })}
       />
       {data.protocol !== 'socks5' && (
@@ -159,6 +166,7 @@ export function RuleForm({
       <TextField
         label={label('name')}
         value={data.name}
+        error={!data.name.trim() ? t('console.requiredField') : ''}
         onChange={(e) => update({ ...data, name: e.target.value })}
       />
       <TextField
