@@ -26,10 +26,12 @@ function changed(items: string[], id: string, enabled: boolean): string[] {
 
 export default function SharedClients({
   data,
+  observedAt,
   subscriptions,
   refresh,
 }: {
   data: ProxyAccess;
+  observedAt: number;
   subscriptions: boolean;
   refresh: () => Promise<void>;
 }) {
@@ -181,6 +183,7 @@ export default function SharedClients({
           key={downloadClient?.id ?? 'legacy'}
           client={downloadClient}
           data={data}
+          observedAt={observedAt}
           subscriptions={subscriptions}
           refresh={refresh}
           onClose={() => setDownloadTarget(undefined)}

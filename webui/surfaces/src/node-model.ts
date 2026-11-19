@@ -618,6 +618,7 @@ export const proxyAccessSchema = z.object({
       groups: z.array(z.string()).default([]),
       disabled: z.boolean().default(false),
       expires: z.number().nullable().default(null),
+      profile_blocked_reason: z.enum(['disabled', 'expired']).nullable().optional(),
       quota_bytes: z.number().nullable().default(null),
       traffic_cycle: z
         .object({ interval_seconds: z.number(), next_reset: z.number() })

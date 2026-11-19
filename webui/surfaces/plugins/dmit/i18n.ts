@@ -87,6 +87,8 @@ const zh = {
     chooseUser: '选择已分配用户',
     chooseDevice: '选择设备',
     noAssignments: '请先编辑此客户端并分配用户。',
+    profileExpired: '此账号已到期。请在「用户与设备」延长有效期，再登记或下载设备配置。',
+    profileDisabled: '此账号已停用。请在「用户与设备」启用账号，再登记或下载设备配置。',
     deviceIssued: '设备已登记，可以选择下方格式下载。',
     issuedRefresh: '后台已处理登记。请在刷新后的设备列表中确认，无需重复登记。',
     definitionsTab: '共享客户端',

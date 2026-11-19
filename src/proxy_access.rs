@@ -131,7 +131,17 @@ impl Account {
     }
 
     fn active(&self, now: u64) -> bool {
-        !self.disabled && self.expires.is_none_or(|expiry| expiry > now)
+        self.profile_blocked_reason(now).is_none()
+    }
+
+    fn profile_blocked_reason(&self, now: u64) -> Option<&'static str> {
+        if self.disabled {
+            Some("disabled")
+        } else if self.expires.is_some_and(|expiry| expiry <= now) {
+            Some("expired")
+        } else {
+            None
+        }
     }
 
     fn ledger_id(&self) -> Uuid {
@@ -378,6 +388,7 @@ impl Database {
             Ok(json!({
                 "username":username, "device_limit":account.device_limit,
                 "groups":account.groups, "disabled":account.disabled, "expires":account.expires,
+                "profile_blocked_reason":account.profile_blocked_reason(now),
                 "quota_bytes":account.quota_bytes, "traffic":usage, "traffic_cycle":account.traffic_cycle,
                 "devices":self.devices.iter().filter(|(_, device)| &device.username == username)
                     .map(|(id, device)| {

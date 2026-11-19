@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Action } from '@community-go/ui-adapter/action';
 import { AlertBanner } from '@community-go/ui-adapter/feedback';
 import { SelectField, TextField } from '@community-go/ui-adapter/form-field';
@@ -19,12 +19,14 @@ type Device = ProxyAccess['users'][number]['devices'][number];
 export default function ClientDeviceDownloads({
   client,
   data,
+  observedAt,
   subscriptions,
   refresh,
   onClose,
 }: {
   client: Client | undefined;
   data: ProxyAccess;
+  observedAt: number;
   subscriptions: boolean;
   refresh: () => Promise<void>;
   onClose: () => void;
@@ -42,6 +44,14 @@ export default function ClientDeviceDownloads({
     (account) =>
       account.username === (username ?? (users.length === 1 ? users[0]?.username : undefined)),
   );
+  const blockedReason =
+    user?.profile_blocked_reason !== undefined
+      ? user.profile_blocked_reason
+      : user?.disabled
+        ? 'disabled'
+        : user?.expires != null && user.expires <= observedAt
+          ? 'expired'
+          : null;
   const clientId = client?.id ?? null;
   const devices = user?.devices.filter((device) => device.client === clientId) ?? [];
   if (
@@ -60,7 +70,7 @@ export default function ClientDeviceDownloads({
     new TextEncoder().encode(name.trim()).length <= 96 &&
     !/\p{Cc}/u.test(name);
   const issue = async () => {
-    if (!user || !nameValid) return;
+    if (!user || blockedReason || busy || !nameValid) return;
     setBusy(true);
     setError('');
     try {
@@ -120,6 +130,15 @@ export default function ClientDeviceDownloads({
           />
           {user && (
             <>
+              {blockedReason && (
+                <p role="status" className="text-sm text-ink-muted">
+                  {t(
+                    blockedReason === 'expired'
+                      ? 'sharedClients.profileExpired'
+                      : 'sharedClients.profileDisabled',
+                  )}
+                </p>
+              )}
               {devices.length === 0 ? (
                 <p className="text-sm text-ink-muted">{t('access.noDevices')}</p>
               ) : (
@@ -138,16 +157,17 @@ export default function ClientDeviceDownloads({
                   onValueChange={setDeviceId}
                 />
               )}
-              {issued?.device.id === device?.id && device && (
+              {!blockedReason && issued?.device.id === device?.id && device && (
                 <p role="status">{t('sharedClients.deviceIssued')}</p>
               )}
-              {device && (
+              {!blockedReason && device && (
                 <DeviceFormats
                   key={device.id}
                   id={device.id}
                   disabled={busy}
                   extraFormats={data.extra_profile_formats ?? []}
                   subscriptions={data.enabled && subscriptions}
+                  refresh={refresh}
                 />
               )}
               <div className="grid gap-3 border-t border-border pt-4">
@@ -155,13 +175,13 @@ export default function ClientDeviceDownloads({
                   label={t('access.deviceName')}
                   hint={data.enabled ? t('access.deviceHint') : ''}
                   value={name}
-                  disabled={busy}
+                  disabled={busy || Boolean(blockedReason)}
                   onChange={(event) => setName(event.target.value)}
                 />
                 <div>
                   <Action
                     variant="secondary"
-                    disabled={busy || !nameValid}
+                    disabled={busy || Boolean(blockedReason) || !nameValid}
                     loading={busy}
                     onPress={() => void issue()}
                   >
@@ -182,30 +202,37 @@ function DeviceFormats({
   disabled,
   extraFormats,
   subscriptions,
+  refresh,
 }: {
   id: string;
   disabled: boolean;
   extraFormats: NonNullable<ProxyAccess['extra_profile_formats']>;
   subscriptions: boolean;
+  refresh: () => Promise<void>;
 }) {
   const t = useNodeText();
   const api = useNodeManagement();
-  const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
+  const [pending, setPending] = useState<DeviceExportFormat | 'native-list'>();
   const [error, setError] = useState('');
   const [native, setNative] = useState<NativeProfile[]>();
-  const run = async (request: () => Promise<void>) => {
-    setBusy(true);
+  const run = async (format: NonNullable<typeof pending>, request: () => Promise<void>) => {
+    if (disabled || inFlight.current) return;
+    inFlight.current = true;
+    setPending(format);
     setError('');
     try {
       await request();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+      await refresh();
     } finally {
-      setBusy(false);
+      inFlight.current = false;
+      setPending(undefined);
     }
   };
   const download = (format: DeviceExportFormat) =>
-    void run(() => api.downloadProxyProfile(id, format));
+    void run(format, () => api.downloadProxyProfile(id, format));
   const formats: { format: DeviceExportFormat; label: string }[] = [
     { format: 'mihomo', label: 'nodes.mihomo' },
     { format: 'xray', label: 'nodes.xray' },
@@ -226,7 +253,8 @@ function DeviceFormats({
           <Action
             key={format}
             variant="secondary"
-            disabled={busy || disabled}
+            disabled={disabled || (pending !== undefined && pending !== format)}
+            loading={pending === format}
             onPress={() => download(format)}
           >
             {t(label)}
@@ -235,8 +263,11 @@ function DeviceFormats({
         {extraFormats.includes('native') && (
           <Action
             variant="secondary"
-            disabled={busy || disabled}
-            onPress={() => void run(async () => setNative(await api.nativeProfiles(id)))}
+            disabled={disabled || (pending !== undefined && pending !== 'native-list')}
+            loading={pending === 'native-list'}
+            onPress={() =>
+              void run('native-list', async () => setNative(await api.nativeProfiles(id)))
+            }
           >
             {t('access.nativeProfiles')}
           </Action>
@@ -249,7 +280,8 @@ function DeviceFormats({
           <div>
             <Action
               variant="secondary"
-              disabled={busy || disabled}
+              disabled={disabled || (pending !== undefined && pending !== profile.format)}
+              loading={pending === profile.format}
               onPress={() => download(profile.format)}
             >
               {t(

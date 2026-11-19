@@ -79,9 +79,45 @@ test('浏览器认证只在面板设置编辑，设备配置只在客户端下�
     await page.getByRole('link', { name: '前往客户端下载' }).click();
     await expect(page.getByRole('heading', { name: '客户端', level: 1 })).toBeVisible();
     downloads = await openDownloads();
+    const mihomo = downloads.getByRole('button', { name: '导出 Mihomo YAML', exact: true });
     const pendingDownload = page.waitForEvent('download');
-    await downloads.getByRole('button', { name: '导出 Mihomo YAML', exact: true }).click();
+    await mihomo.focus();
+    await page.keyboard.press('Enter');
     expect((await pendingDownload).suggestedFilename()).toBe('nodectl-mihomo.yaml');
+    await expect(mihomo).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(downloads).toBeHidden();
+    await expect(
+      page
+        .getByRole('heading', { name: '原有设备配置', exact: true })
+        .locator('../..')
+        .getByRole('button', { name: '设备与下载', exact: true }),
+    ).toBeFocused();
+
+    const expired = await page.evaluate(async (username) => {
+      const { csrf } = (await (await fetch('/nc/api/session')).json()) as { csrf: string };
+      const response = await fetch('/nc/api/proxy-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({
+          action: 'policy',
+          username,
+          disabled: false,
+          expires: 1,
+          quota_bytes: null,
+        }),
+      });
+      return response.status;
+    }, username);
+    expect(expired).toBe(200);
+    await page.reload();
+    downloads = await openDownloads();
+    await expect(downloads.getByRole('status')).toContainText('此账号已到期');
+    await expect(
+      downloads.getByRole('button', { name: /Chromium fixture.*选择设备/ }),
+    ).toBeVisible();
+    await expect(downloads.getByRole('button', { name: '登记设备', exact: true })).toBeDisabled();
+    await expect(mihomo).toHaveCount(0);
   } finally {
     await page.evaluate(
       async ({ username, originalTtl }) => {
