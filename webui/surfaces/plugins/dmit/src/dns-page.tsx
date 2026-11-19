@@ -140,6 +140,7 @@ export default function DnsPage() {
           <PlanReview
             key={renewal.plan}
             plan={renewal}
+            allowDeployment
             initialManualCertificates={false}
             onApplied={async () => {
               setRenewal(null);

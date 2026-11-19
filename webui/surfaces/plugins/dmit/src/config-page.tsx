@@ -380,6 +380,7 @@ function ConfigEditor({
           <PlanReview
             key={plan.plan}
             plan={plan}
+            allowDeployment
             onApplied={async () => {
               setPlan(null);
               setApplied(true);

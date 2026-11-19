@@ -541,6 +541,7 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
               <PlanReview
                 key={plan.plan}
                 plan={plan}
+                resourceReview
                 onBack={() => setPlan(null)}
                 onApplied={async () => {
                   setPlan(null);

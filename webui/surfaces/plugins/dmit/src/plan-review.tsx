@@ -8,23 +8,40 @@ import { AlertBanner, Badge } from '@community-go/ui-adapter/feedback';
 import { DataTable } from '@community-go/ui-adapter/data-display';
 import { useNodeManagement, type ConfigPlan, type JobResult } from '../../../src/node-management';
 import { Details, Code, useNodeText } from './common';
+
+function ChangeValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined) return <>—</>;
+  if (typeof value === 'object') {
+    return (
+      <details>
+        <summary className="cursor-pointer">{'{…}'}</summary>
+        <Code>{JSON.stringify(value, null, 2)}</Code>
+      </details>
+    );
+  }
+  return <code className="break-all text-xs">{JSON.stringify(value)}</code>;
+}
 export default function PlanReview({
   plan,
   onApplied,
   onBack,
+  allowDeployment = false,
+  resourceReview = false,
   initialManualCertificates = true,
   copy,
 }: Readonly<{
   plan: ConfigPlan;
   onApplied: () => Promise<void>;
   onBack?: () => void;
+  allowDeployment?: boolean;
+  resourceReview?: boolean;
   initialManualCertificates?: boolean;
   copy?: { node: string; onApply: () => void };
 }>) {
   const api = useNodeManagement();
   const t = useNodeText();
   const [confirm, setConfirm] = useState('');
-  const [checked, setChecked] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<JobResult | null>(null);
@@ -33,6 +50,10 @@ export default function PlanReview({
   const [email, setEmail] = useState('');
   const [ca, setCa] = useState(false);
   const [warp, setWarp] = useState(false);
+  const deployment = typeof result?.deployment === 'object' ? result.deployment : null;
+  const checked = result?.plan === plan.plan && (result.checked === true || deployment !== null);
+  const ready = checked && !pending && (resourceReview || confirm.trim() === plan.plan);
+  const applyLabel = t(resourceReview ? 'config.applyResource' : 'common.apply');
   const run = async (work: () => Promise<void>) => {
     setPending(true);
     setError('');
@@ -46,8 +67,8 @@ export default function PlanReview({
     }
   };
   const preparationChanged = () => {
-    setChecked(false);
     setResult(null);
+    setConfirm('');
   };
   return (
     <>
@@ -58,7 +79,7 @@ export default function PlanReview({
         <>
           <Section
             title={t('config.review')}
-            description={plan.risk}
+            description={resourceReview ? t('config.resourceReview') : plan.risk}
             action={
               onBack && (
                 <Action variant="secondary" disabled={pending} onPress={onBack}>
@@ -118,16 +139,12 @@ export default function PlanReview({
                 {
                   id: 'before',
                   label: t('common.before'),
-                  render: (c) => (
-                    <code className="break-all text-xs">{JSON.stringify(c.before)}</code>
-                  ),
+                  render: (c) => <ChangeValue value={c.before} />,
                 },
                 {
                   id: 'after',
                   label: t('common.after'),
-                  render: (c) => (
-                    <code className="break-all text-xs">{JSON.stringify(c.after)}</code>
-                  ),
+                  render: (c) => <ChangeValue value={c.after} />,
                 },
               ]}
             />
@@ -138,14 +155,24 @@ export default function PlanReview({
               </details>
             </div>
           </Section>
-          <Section
-            title={t(copy ? 'common.check' : 'config.deployment')}
-            {...(copy ? {} : { description: t('config.deploymentDescription') })}
-            contentInset
-          >
-            {!copy && (
-              <>
-                <div className="grid gap-4 md:grid-cols-2">
+          <Section title={t('common.check')} contentInset>
+            <Action
+              loading={pending && !confirmOpen}
+              disabled={pending}
+              onPress={() => {
+                void run(async () => {
+                  preparationChanged();
+                  setResult(await api.check(plan.plan, copy?.node));
+                }).catch(() => {});
+              }}
+            >
+              {t('common.check')}
+            </Action>
+            {allowDeployment && !copy && !plan.restores_identity && (
+              <details className="mt-5">
+                <summary className="cursor-pointer font-semibold">{t('config.deployment')}</summary>
+                <p className="mt-3 text-sm text-ink-muted">{t('config.deploymentDescription')}</p>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <SwitchField
                     label={t('config.manualCertificates')}
                     description=""
@@ -193,99 +220,98 @@ export default function PlanReview({
                     }}
                   />
                 </div>
-              </>
+                <div className="mt-4">
+                  <Action
+                    variant="secondary"
+                    disabled={pending}
+                    onPress={() => {
+                      void run(async () => {
+                        preparationChanged();
+                        setResult(
+                          await api.prepareDeployment(plan.plan, {
+                            manual_certificates: manual,
+                            skip_dependencies: skip,
+                            accept_ca_terms: ca,
+                            accept_warp_terms: warp,
+                            ...(email ? { acme_email: email } : {}),
+                          }),
+                        );
+                      }).catch(() => {});
+                    }}
+                  >
+                    {t('config.prepareDeployment')}
+                  </Action>
+                </div>
+              </details>
             )}
-            <div className="mt-5 flex flex-wrap gap-3">
-              <Action
-                variant="secondary"
-                disabled={pending}
-                onPress={() => {
-                  void run(async () => {
-                    preparationChanged();
-                    const r = await api.check(plan.plan, copy?.node);
-                    setResult(r);
-                    setChecked(true);
-                  }).catch(() => {});
-                }}
-              >
-                {t('common.check')}
-              </Action>
-              {!copy && (
-                <Action
-                  variant="secondary"
-                  disabled={pending || plan.restores_identity}
-                  onPress={() => {
-                    void run(async () => {
-                      preparationChanged();
-                      const r = await api.prepareDeployment(plan.plan, {
-                        manual_certificates: manual,
-                        skip_dependencies: skip,
-                        accept_ca_terms: ca,
-                        accept_warp_terms: warp,
-                        ...(email ? { acme_email: email } : {}),
-                      });
-                      setResult(r);
-                      setChecked(true);
-                    }).catch(() => {});
-                  }}
-                >
-                  {t('config.prepareDeployment')}
-                </Action>
-              )}
-            </div>
           </Section>
-          {typeof result?.deployment === 'object' ? (
+          {deployment ? (
             <Section title={t('config.deployPlan')} contentInset>
               <Details
                 label={t('config.deployPlan')}
                 items={[
-                  [t('config.plan'), result.deployment_digest],
-                  [t('common.phase'), result.deployment.stages.join(' → ')],
+                  [t('config.deploymentDigest'), result?.deployment_digest],
+                  [t('common.phase'), deployment.stages.join(' → ')],
                 ]}
               />
               <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-warning">
-                {result.deployment.recovery_limits.map((r) => (
+                {deployment.recovery_limits.map((r) => (
                   <li key={r}>{r}</li>
                 ))}
               </ul>
-              {result.deployment.dns_changes.length ? (
+              {deployment.dns_changes.length ? (
                 <div className="mt-4">
-                  <Code>{JSON.stringify(result.deployment.dns_changes, null, 2)}</Code>
+                  <Code>{JSON.stringify(deployment.dns_changes, null, 2)}</Code>
                 </div>
               ) : null}
             </Section>
           ) : null}
-          <Section title={t('common.apply')} description={t('config.confirmHint')} contentInset>
+          <Section
+            title={applyLabel}
+            description={t(resourceReview ? 'config.resourceConfirmHint' : 'config.confirmHint')}
+            contentInset
+          >
             <div className="grid gap-4">
               {checked ? (
-                <Badge tone="success">
-                  {t(
-                    result?.check_deferred_until_dependencies
-                      ? 'config.prepareDeployment'
-                      : 'config.checked',
-                  )}
+                <Badge tone={deployment ? 'info' : 'success'}>
+                  {t(deployment ? 'config.deploymentPrepared' : 'config.checked')}
                 </Badge>
               ) : null}
-              <TextField
-                label={t('config.confirmation')}
-                value={confirm}
-                disabled={!checked || pending}
-                onChange={(e) => setConfirm(e.target.value)}
-              />
+              {checked && !resourceReview && (
+                <div className="grid gap-3">
+                  <Code>{plan.plan}</Code>
+                  <TextField
+                    label={t('config.confirmation')}
+                    value={confirm}
+                    disabled={pending}
+                    error={
+                      confirm && confirm.trim() !== plan.plan ? t('config.confirmMismatch') : ''
+                    }
+                    onChange={(e) => setConfirm(e.target.value)}
+                  />
+                </div>
+              )}
+              <div>
+                <Action variant="danger" disabled={!ready} onPress={() => setConfirmOpen(true)}>
+                  {applyLabel}
+                </Action>
+              </div>
               <ConfirmDialog
-                triggerLabel={t('common.apply')}
-                title={t('common.apply')}
-                description={t('config.applyRisk')}
+                isOpen={confirmOpen}
+                onOpenChange={setConfirmOpen}
+                triggerLabel={applyLabel}
+                title={applyLabel}
+                description={t(deployment ? 'config.deploymentApplyRisk' : 'config.applyRisk')}
                 impact={<Code>{plan.plan}</Code>}
                 cancelLabel={t('common.cancel')}
                 confirmLabel={t('common.confirm')}
-                confirmDisabled={!checked || confirm !== plan.plan || pending}
+                confirmDisabled={!ready}
                 failureMessage={error || t('common.failed')}
                 tone="danger"
                 onConfirm={() =>
                   run(async () => {
                     copy?.onApply();
-                    await api.apply(plan.plan, confirm, copy?.node);
+                    await api.apply(plan.plan, plan.plan, copy?.node);
                     await onApplied();
                   })
                 }
