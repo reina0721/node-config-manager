@@ -11,6 +11,9 @@ use std::{
 };
 use uuid::Uuid;
 
+mod xray_protocol;
+pub(crate) use xray_protocol::replace_accounts;
+
 pub const LOCAL: &str = "local";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -36,6 +39,14 @@ pub enum Protocol {
     Ws,
     Reality,
     Vless,
+    Vmess,
+    Trojan,
+    Shadowsocks,
+    #[serde(rename = "shadowsocks-2022")]
+    Shadowsocks2022,
+    Http,
+    Mixed,
+    Hysteria2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -44,11 +55,16 @@ pub enum Transport {
     Raw,
     Xhttp,
     Ws,
+    Hysteria,
+    Grpc,
+    Httpupgrade,
+    Mkcp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Security {
+    None,
     Tls,
     Reality,
 }
@@ -58,6 +74,23 @@ pub enum Security {
 pub enum Listener {
     SharedHttps,
     Dedicated,
+    Fallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum XhttpMode {
+    Auto,
+    PacketUp,
+    StreamUp,
+    StreamOne,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum VlessFlow {
+    None,
+    Vision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -89,25 +122,76 @@ const RAW_TLS: Stack = Stack {
     security: Security::Tls,
     ..RAW_REALITY
 };
-const VLESS_STACKS: &[Stack] = &[SHARED_XHTTP, SHARED_WS, XHTTP_REALITY, RAW_TLS, RAW_REALITY];
+const FALLBACK_TLS: Stack = Stack {
+    listener: Listener::Fallback,
+    ..RAW_TLS
+};
+const GRPC_TLS: Stack = Stack {
+    transport: Transport::Grpc,
+    ..RAW_TLS
+};
+const UPGRADE_TLS: Stack = Stack {
+    transport: Transport::Httpupgrade,
+    ..RAW_TLS
+};
+const MKCP: Stack = Stack {
+    transport: Transport::Mkcp,
+    security: Security::None,
+    ..RAW_TLS
+};
+const VLESS_STACKS: &[Stack] = &[
+    SHARED_XHTTP,
+    SHARED_WS,
+    XHTTP_REALITY,
+    RAW_TLS,
+    RAW_REALITY,
+    GRPC_TLS,
+    UPGRADE_TLS,
+];
+const STREAM_STACKS: &[Stack] = &[RAW_TLS, SHARED_WS, GRPC_TLS, UPGRADE_TLS, MKCP];
+const SS_STACKS: &[Stack] = &[Stack {
+    security: Security::None,
+    ..RAW_TLS
+}];
+const HYSTERIA_STACKS: &[Stack] = &[Stack {
+    transport: Transport::Hysteria,
+    ..RAW_TLS
+}];
 
 pub fn inbound_capabilities() -> Value {
     json!({
-        "combinations":VLESS_STACKS.iter().map(|stack| json!({
-            "protocol":"vless",
-            "transport":stack.transport,
-            "security":stack.security,
-            "listener":stack.listener,
-            "runtime":"xray",
-            "formats":["xray","mihomo"]
-        })).collect::<Vec<_>>()
+        "combinations":Protocol::MANAGED.into_iter().flat_map(|protocol| {
+            protocol.stacks().iter().map(move |stack| json!({
+                "protocol":protocol,
+                "transport":stack.transport,
+                "security":stack.security,
+                "listener":stack.listener,
+                "runtime":"xray",
+                "formats":if stack.transport == Transport::Mkcp { vec!["xray"] } else { vec!["xray","mihomo"] }
+            }))
+        }).collect::<Vec<_>>()
     })
 }
 
 impl Stack {
+    fn http_path(self) -> bool {
+        matches!(
+            self.transport,
+            Transport::Xhttp | Transport::Ws | Transport::Httpupgrade
+        )
+    }
+
+    fn uses_udp_socket(self) -> bool {
+        matches!(self.transport, Transport::Hysteria | Transport::Mkcp)
+    }
+
+    fn owns_tls(self) -> bool {
+        self.listener == Listener::Dedicated && self.security == Security::Tls
+    }
+
     fn template(self) -> &'static str {
         match self.listener {
-            Listener::Dedicated => "reality",
+            Listener::Dedicated | Listener::Fallback => "reality",
             Listener::SharedHttps if self.transport == Transport::Ws => "ws",
             Listener::SharedHttps => "xhttp",
         }
@@ -115,12 +199,35 @@ impl Stack {
 }
 
 impl Protocol {
+    const MANAGED: [Self; 8] = [
+        Self::Vless,
+        Self::Vmess,
+        Self::Trojan,
+        Self::Shadowsocks,
+        Self::Shadowsocks2022,
+        Self::Http,
+        Self::Mixed,
+        Self::Hysteria2,
+    ];
+
+    fn stacks(self) -> &'static [Stack] {
+        match self {
+            Self::Vless => VLESS_STACKS,
+            Self::Vmess => STREAM_STACKS,
+            Self::Trojan => &[RAW_TLS, GRPC_TLS, FALLBACK_TLS],
+            Self::Http | Self::Mixed => &[RAW_TLS],
+            Self::Shadowsocks | Self::Shadowsocks2022 => SS_STACKS,
+            Self::Hysteria2 => HYSTERIA_STACKS,
+            _ => &[],
+        }
+    }
+
     fn legacy(self) -> Option<Stack> {
         match self {
             Self::Xhttp => Some(SHARED_XHTTP),
             Self::Ws => Some(SHARED_WS),
             Self::Reality => Some(XHTTP_REALITY),
-            Self::Vless => None,
+            _ => None,
         }
     }
 }
@@ -139,21 +246,28 @@ pub struct Inbound {
     pub security: Option<Security>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listener: Option<Listener>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xhttp_mode: Option<XhttpMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<VlessFlow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vless_encryption: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub fallback_parent: Option<Uuid>,
 }
 
 impl Inbound {
     fn checked_stack(&self) -> Option<Stack> {
         match (self.transport, self.security, self.listener) {
             (None, None, None) => self.protocol.legacy(),
-            (Some(transport), Some(security), Some(listener))
-                if self.protocol == Protocol::Vless =>
-            {
+            (Some(transport), Some(security), Some(listener)) => {
                 let stack = Stack {
                     transport,
                     security,
                     listener,
                 };
-                VLESS_STACKS.contains(&stack).then_some(stack)
+                self.protocol.stacks().contains(&stack).then_some(stack)
             }
             _ => None,
         }
@@ -163,15 +277,46 @@ impl Inbound {
         self.checked_stack().expect("validated inbound transport")
     }
 
+    fn supports(&self, format: Format) -> bool {
+        self.stack().transport != Transport::Mkcp || format == Format::Xray
+    }
+
     pub fn dedicated(&self) -> bool {
         self.stack().listener == Listener::Dedicated
     }
 
+    pub(crate) fn uses_nginx(&self) -> bool {
+        self.stack().listener == Listener::SharedHttps
+    }
+
+    pub(crate) fn owns_tls(&self) -> bool {
+        self.stack().owns_tls()
+    }
+
+    pub(crate) fn tcp_listener(&self) -> bool {
+        self.dedicated() && !self.stack().uses_udp_socket()
+    }
+
+    pub(crate) fn udp_listener(&self) -> bool {
+        self.stack().uses_udp_socket()
+            || matches!(
+                self.protocol,
+                Protocol::Shadowsocks | Protocol::Shadowsocks2022 | Protocol::Mixed
+            )
+    }
+
     pub fn port(&self, c: &Config) -> u16 {
-        if self.dedicated() {
-            self.port
-        } else {
-            c.ports.https
+        match self.stack().listener {
+            Listener::Dedicated => self.port,
+            Listener::SharedHttps => c.ports.https,
+            Listener::Fallback => c
+                .management
+                .as_ref()
+                .and_then(|m| {
+                    self.fallback_parent
+                        .and_then(|parent| m.inbounds.get(&parent))
+                })
+                .map_or(0, |parent| parent.port),
         }
     }
 }
@@ -439,6 +584,13 @@ fn label(input: &str, max: usize) -> bool {
     input.len() <= max && !input.chars().any(char::is_control)
 }
 
+fn service_name(input: &str) -> bool {
+    (1..=128).contains(&input.len())
+        && input
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+}
+
 pub fn validate(c: &Config) -> Result<()> {
     let Some(catalogue) = &c.management else {
         return Ok(());
@@ -474,20 +626,58 @@ pub fn validate(c: &Config) -> Result<()> {
         &c.transport.ws.path,
         &c.transport.reality.path,
     ];
+    let mut fallback_parents = BTreeSet::new();
     for (&id, inbound) in &catalogue.inbounds {
         ensure!(
             !id.is_nil() && label(&inbound.remark, 120) && !inbound.remark.trim().is_empty(),
             "invalid_inbound_remark"
         );
         let stack = inbound.checked_stack().context("invalid_inbound_stack")?;
-        if stack.transport == Transport::Raw {
+        ensure!(
+            inbound.xhttp_mode.is_none()
+                || (inbound.protocol == Protocol::Vless && stack.transport == Transport::Xhttp),
+            "invalid_xhttp_mode"
+        );
+        ensure!(
+            inbound.flow.is_none()
+                || (inbound.protocol == Protocol::Vless && stack.transport == Transport::Raw),
+            "invalid_vless_flow"
+        );
+        if let Some(encryption) = inbound.vless_encryption {
+            ensure!(
+                inbound.protocol == Protocol::Vless
+                    && stack == RAW_TLS
+                    && (!encryption || c.encrypted()),
+                "invalid_vless_encryption"
+            );
+        }
+        if stack.listener == Listener::Fallback {
+            let parent_id = inbound.fallback_parent.context("invalid_fallback_parent")?;
+            let parent = catalogue
+                .inbounds
+                .get(&parent_id)
+                .context("invalid_fallback_parent")?;
+            ensure!(
+                parent.protocol == Protocol::Vless
+                    && parent.checked_stack() == Some(RAW_TLS)
+                    && !parent.vless_encryption.unwrap_or(c.encrypted())
+                    && (!inbound.enabled || parent.enabled)
+                    && fallback_parents.insert(parent_id),
+                "invalid_fallback_parent"
+            );
+        } else {
+            ensure!(inbound.fallback_parent.is_none(), "invalid_fallback_parent");
+        }
+        if stack.transport == Transport::Grpc {
+            ensure!(service_name(&inbound.path), "invalid_inbound_path");
+        } else if !stack.http_path() {
             ensure!(inbound.path.is_empty(), "invalid_inbound_path");
         } else {
             let root = stack.listener == Listener::Dedicated
                 && inbound.protocol == Protocol::Vless
                 && inbound.path == "/";
             ensure!(
-                root || (config::route(&inbound.path, stack.transport != Transport::Ws)
+                root || (config::route(&inbound.path, stack.transport == Transport::Xhttp)
                     && inbound.path.len() <= 256),
                 "invalid_inbound_path"
             );
@@ -561,10 +751,11 @@ pub fn validate(c: &Config) -> Result<()> {
         let stack = target.stack();
         ensure!(
             host.path.is_empty()
-                || (stack.transport != Transport::Raw
+                || (stack.transport == Transport::Grpc && service_name(&host.path))
+                || (stack.http_path()
                     && host.path.len() <= 256
                     && ((host.path == "/" && stack.listener == Listener::Dedicated)
-                        || config::route(&host.path, stack.transport != Transport::Ws))),
+                        || config::route(&host.path, stack.transport == Transport::Xhttp))),
             "invalid_host_path"
         );
         ensure!(
@@ -575,13 +766,17 @@ pub fn validate(c: &Config) -> Result<()> {
             host.alpn.len() <= 2
                 && host.alpn.iter().all(|a| {
                     stack.security == Security::Tls
-                        && (a == "http/1.1" || (stack.transport != Transport::Ws && a == "h2"))
+                        && match stack.transport {
+                            Transport::Hysteria => a == "h3",
+                            Transport::Grpc => a == "h2",
+                            Transport::Ws | Transport::Httpupgrade => a == "http/1.1",
+                            _ => a == "http/1.1" || a == "h2",
+                        }
                 }),
             "Invalid host ALPN"
         );
         ensure!(
-            host.host_header.is_empty()
-                || (stack.security == Security::Tls && stack.transport != Transport::Raw),
+            host.host_header.is_empty() || (stack.security == Security::Tls && stack.http_path()),
             "REALITY has no HTTP host override"
         );
     }
@@ -637,6 +832,16 @@ pub fn host_probe_id(key: Uuid, host: Uuid) -> Uuid {
     uuid::Builder::from_random_bytes(id).into_uuid()
 }
 
+pub(crate) fn device_alias(id: Uuid) -> String {
+    format!("device-{}", crate::store::digest(id.as_bytes()))
+}
+
+pub(crate) const HEALTH_ALIAS: &str = "nodectl-proxy-health";
+
+pub(crate) fn host_probe_alias(id: Uuid) -> String {
+    format!("nodectl-managed-host-check-{id}")
+}
+
 pub(crate) fn inbound_user(id: Uuid, inbound: &Inbound, device: Uuid) -> Uuid {
     if inbound.protocol != Protocol::Vless {
         return device;
@@ -660,7 +865,7 @@ pub fn nginx(c: &Config, template: &str, vars: &BTreeMap<&str, String>) -> Resul
         .context("Missing WebSocket route template")?;
     let ws = format!("        location = {{{{ WS_PATH }}}}{ws}");
     for (id, inbound) in catalogue.active_inbounds() {
-        if inbound.dedicated() {
+        if !inbound.uses_nginx() {
             continue;
         }
         let (route, path_var, socket_var) = if inbound.stack().transport == Transport::Ws {
@@ -702,10 +907,12 @@ pub fn listener_secrets(s: &Secrets, id: Uuid) -> Secrets {
 pub fn redactions(c: &Config, s: &Secrets) -> Vec<String> {
     c.management
         .iter()
-        .flat_map(|m| m.inbounds.keys())
-        .flat_map(|&id| {
+        .flat_map(|m| &m.inbounds)
+        .flat_map(|(&id, inbound)| {
             let d = listener_secrets(s, id);
             [d.reality_private_key, d.reality_short_id, d.reality_uuid]
+                .into_iter()
+                .chain(xray_protocol::redactions(s, id, inbound.protocol))
         })
         .collect()
 }
@@ -734,7 +941,7 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
         for template in &templates {
             let tag = match template["tag"].as_str() {
                 Some(name) if name == selected_tag => tag(id),
-                Some(name) if name == selected_ipv6 => ipv6_tag(id),
+                Some(name) if name == selected_ipv6 && inbound.dedicated() => ipv6_tag(id),
                 _ => continue,
             };
             let mut entry = template.clone();
@@ -751,14 +958,22 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
                 }
             } else {
                 entry["listen"] = json!(format!("{},0660", socket(id)));
+                entry.as_object_mut().expect("core inbound").remove("port");
             }
             let stream = &mut entry["streamSettings"];
             match stack.transport {
-                Transport::Raw => {
-                    stream["network"] = json!("raw");
+                Transport::Raw
+                | Transport::Hysteria
+                | Transport::Grpc
+                | Transport::Httpupgrade
+                | Transport::Mkcp => {
+                    stream["network"] = json!(stack.transport);
                     stream.as_object_mut().unwrap().remove("xhttpSettings");
-                    if stack.security == Security::Tls {
+                    if stack.security != Security::Reality {
                         stream.as_object_mut().unwrap().remove("realitySettings");
+                        stream.as_object_mut().unwrap().remove("security");
+                    }
+                    if stack.owns_tls() {
                         stream["security"] = json!("tls");
                         stream["tlsSettings"] = json!({
                             "minVersion":"1.3",
@@ -768,10 +983,43 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
                             }]
                         });
                     }
+                    direct_transport(stream, stack.transport, &inbound.path);
+                    if matches!(stack.transport, Transport::Grpc | Transport::Httpupgrade) {
+                        entry["settings"]["clients"][0]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("flow");
+                    }
                 }
                 Transport::Xhttp => stream["xhttpSettings"]["path"] = json!(inbound.path),
                 Transport::Ws => stream["wsSettings"]["path"] = json!(inbound.path),
             }
+            if let Some(mode) = inbound.xhttp_mode {
+                entry["streamSettings"]["xhttpSettings"]["mode"] = json!(mode);
+            }
+            apply_flow(
+                &mut entry["settings"]["clients"][0],
+                inbound.flow,
+                "xtls-rprx-vision",
+            );
+            if inbound.vless_encryption == Some(false) {
+                entry["settings"]["decryption"] = json!("none");
+                if inbound.flow.is_none() {
+                    apply_flow(
+                        &mut entry["settings"]["clients"][0],
+                        Some(VlessFlow::None),
+                        "",
+                    );
+                }
+            }
+            if let Some((child, _)) = catalogue
+                .active_inbounds()
+                .find(|(_, child)| child.fallback_parent == Some(id))
+            {
+                entry["settings"]["fallbacks"] = json!([{"dest":socket(child),"xver":0}]);
+                entry["streamSettings"]["tlsSettings"]["alpn"] = json!(["http/1.1"]);
+            }
+            xray_protocol::configure_inbound(&mut entry, inbound, id, s);
             inbounds.push(entry);
         }
     }
@@ -788,12 +1036,43 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
         );
 }
 
+fn apply_flow(user: &mut Value, flow: Option<VlessFlow>, vision: &str) {
+    match flow {
+        Some(VlessFlow::Vision) => user["flow"] = json!(vision),
+        Some(VlessFlow::None) => {
+            user.as_object_mut().expect("VLESS user").remove("flow");
+        }
+        None => {}
+    }
+}
+
+fn direct_transport(stream: &mut Value, transport: Transport, path: &str) {
+    match transport {
+        Transport::Grpc => {
+            stream["tlsSettings"]["alpn"] = json!(["h2"]);
+            stream["grpcSettings"] = json!({"serviceName":path});
+        }
+        Transport::Httpupgrade => {
+            stream["tlsSettings"]["alpn"] = json!(["http/1.1"]);
+            stream["httpupgradeSettings"] = json!({"path":path});
+        }
+        Transport::Hysteria => {
+            stream["tlsSettings"]["alpn"] = json!(["h3"]);
+            stream["hysteriaSettings"] = json!({"version":2});
+        }
+        Transport::Mkcp => {
+            stream["kcpSettings"] = json!({});
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn materialize_tls(c: &Config, xray: &mut Value) -> Result<()> {
     let tags: BTreeSet<_> = c
         .management
         .iter()
         .flat_map(|m| m.active_inbounds())
-        .filter(|(_, inbound)| inbound.stack() == RAW_TLS)
+        .filter(|(_, inbound)| inbound.owns_tls())
         .flat_map(|(id, _)| [tag(id), ipv6_tag(id)])
         .collect();
     if tags.is_empty() {
@@ -821,6 +1100,7 @@ pub fn client_outbound(
     host: Option<&Host>,
     endpoint: Option<&Endpoint>,
     user: Uuid,
+    alias: &str,
 ) -> Result<Value> {
     let stack = target.stack();
     let user = match target {
@@ -845,16 +1125,32 @@ pub fn client_outbound(
     }
     let stream = &mut outbound["streamSettings"];
     let settings = match stack.transport {
-        Transport::Raw => {
-            stream["network"] = json!("raw");
+        Transport::Raw
+        | Transport::Hysteria
+        | Transport::Grpc
+        | Transport::Httpupgrade
+        | Transport::Mkcp => {
+            stream["network"] = json!(stack.transport);
             stream.as_object_mut().unwrap().remove("xhttpSettings");
-            if stack.security == Security::Tls {
+            if stack.security != Security::Reality {
                 stream.as_object_mut().unwrap().remove("realitySettings");
+                stream.as_object_mut().unwrap().remove("security");
+            }
+            if stack.security == Security::Tls && stack.listener != Listener::SharedHttps {
                 stream["security"] = json!("tls");
                 stream["tlsSettings"] = json!({
                     "serverName":c.node.domain, "fingerprint":fingerprint,
                     "useSystemCA":true, "minVersion":"1.3"
                 });
+            }
+            let path = host
+                .filter(|h| !h.path.is_empty())
+                .map_or_else(|| target.path(c), |h| h.path.as_str());
+            direct_transport(stream, stack.transport, path);
+            if stack.transport == Transport::Httpupgrade
+                && let Some(host) = host.filter(|h| !h.host_header.is_empty())
+            {
+                stream["httpupgradeSettings"]["host"] = json!(host.host_header);
             }
             None
         }
@@ -887,6 +1183,30 @@ pub fn client_outbound(
             }
         }
     }
+    if matches!(stack.transport, Transport::Grpc | Transport::Httpupgrade) {
+        outbound["settings"]["vnext"][0]["users"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("flow");
+    }
+    if let Target::Managed(id, inbound) = target {
+        if let Some(mode) = inbound.xhttp_mode {
+            outbound["streamSettings"]["xhttpSettings"]["mode"] = json!(mode);
+        }
+        apply_flow(
+            &mut outbound["settings"]["vnext"][0]["users"][0],
+            inbound.flow,
+            "xtls-rprx-vision-udp443",
+        );
+        if inbound.vless_encryption == Some(false) {
+            let user = &mut outbound["settings"]["vnext"][0]["users"][0];
+            user["encryption"] = json!("none");
+            if inbound.flow.is_none() {
+                apply_flow(user, Some(VlessFlow::None), "");
+            }
+        }
+        xray_protocol::client(&mut outbound, inbound, id, s, user, alias)?;
+    }
     Ok(outbound)
 }
 
@@ -907,11 +1227,12 @@ pub fn client_entries<'a>(
         return Ok(Vec::new());
     };
     let mut entries = Vec::new();
+    let alias = device_alias(user);
     for (id, inbound) in catalogue.active_inbounds() {
-        if catalogue.granted(groups, id) {
+        if inbound.supports(format) && catalogue.granted(groups, id) {
             let name = format!("{} · {id}", inbound.remark);
             let mut outbound =
-                client_outbound(c, s, Target::Managed(id, inbound), None, None, user)?;
+                client_outbound(c, s, Target::Managed(id, inbound), None, None, user, &alias)?;
             outbound["tag"] = json!(name);
             entries.push(ClientEntry {
                 name,
@@ -932,7 +1253,8 @@ pub fn client_entries<'a>(
         let target = catalogue
             .target(&host.inbound)
             .context("Unknown host inbound")?;
-        if matches!(target, Target::Managed(inbound, _) if !catalogue.granted(groups, inbound)) {
+        if matches!(target, Target::Managed(id, inbound) if !inbound.supports(format) || !catalogue.granted(groups, id))
+        {
             continue;
         }
         let fallback = if host.port == 0 {
@@ -943,7 +1265,8 @@ pub fn client_entries<'a>(
         for (index, address) in host.addresses.iter().enumerate() {
             let endpoint = endpoint(address, fallback)?;
             let name = format!("{} · {id}/{}", host.remark, index + 1);
-            let mut outbound = client_outbound(c, s, target, Some(host), Some(&endpoint), user)?;
+            let mut outbound =
+                client_outbound(c, s, target, Some(host), Some(&endpoint), user, &alias)?;
             outbound["tag"] = json!(name);
             entries.push(ClientEntry {
                 name,

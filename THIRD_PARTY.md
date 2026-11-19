@@ -17,6 +17,7 @@
 | rand | 0.8.8 | MIT OR Apache-2.0 | [source](https://github.com/rust-random/rand) |
 | regex | 1.13.1 | MIT OR Apache-2.0 | [source](https://github.com/rust-lang/regex) |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | [source](https://github.com/servo/rust-url) |
+| qrcode | 0.14.1 | MIT OR Apache-2.0 | [source](https://github.com/kennytm/qrcode-rust) |
 | unicode-general-category | 1.1.0 | Apache-2.0 | [source](https://github.com/yeslogic/unicode-general-category) |
 | ring | 0.17.14 | Apache-2.0 AND ISC | [source](https://github.com/briansmith/ring) |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 | [source](https://github.com/rustls/tokio-rustls) |

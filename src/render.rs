@@ -3,6 +3,8 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+mod client_export;
+
 pub const TEMPLATE_VERSION: &str = "4";
 
 pub fn template(source: &str, vars: &BTreeMap<&str, String>) -> Result<String> {
@@ -150,12 +152,15 @@ fn mihomo_nodes(c: &Config, s: &Secrets) -> Result<Vec<Value>> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|p| mihomo_node(c, p["name"].as_str().unwrap(), &p["outbound"], None))
+        .map(|p| mihomo_node(p["name"].as_str().unwrap(), &p["outbound"], None))
         .collect())
 }
 
-fn mihomo_node(c: &Config, name: &str, o: &Value, host: Option<&crate::catalogue::Host>) -> Value {
+fn mihomo_node(name: &str, o: &Value, host: Option<&crate::catalogue::Host>) -> Value {
     let stream = &o["streamSettings"];
+    if o["protocol"] != "vless" {
+        return mihomo_managed_node(name, o, host);
+    }
     let user = &o["settings"]["vnext"][0]["users"][0];
     let real = stream["security"] == "reality";
     let tls = if real {
@@ -164,22 +169,19 @@ fn mihomo_node(c: &Config, name: &str, o: &Value, host: Option<&crate::catalogue
         &stream["tlsSettings"]
     };
     let mut node = json!({"name":name,"type":"vless","server":o["settings"]["vnext"][0]["address"],"port":o["settings"]["vnext"][0]["port"],"uuid":user["id"],"udp":true,"packet-encoding":"xudp","tls":true,"servername":tls["serverName"],"client-fingerprint":tls["fingerprint"],"skip-cert-verify":false,"network":stream["network"]});
-    if stream["network"] == "ws" {
-        node["alpn"] = json!(["http/1.1"]);
-        node["ws-opts"] = stream["wsSettings"].clone();
-    } else if stream["network"] == "xhttp" {
-        node["alpn"] = json!(["h2", "http/1.1"]);
-        node["xhttp-opts"] = stream["xhttpSettings"].clone();
-    } else if stream["network"] == "raw" {
-        node["network"] = json!("tcp");
-    }
+    mihomo_transport(&mut node, stream);
     if real {
         // The pinned REALITY server requires the hybrid key share. Mihomo
         // otherwise strips it from its fingerprint by default.
         node["reality-opts"] = json!({"public-key":tls["password"],"short-id":tls["shortId"],"support-x25519mlkem768":true});
     }
-    if c.encrypted() {
+    if user["encryption"]
+        .as_str()
+        .is_some_and(|value| value != "none")
+    {
         node["encryption"] = user["encryption"].clone();
+    }
+    if user["flow"].is_string() {
         node["flow"] = json!("xtls-rprx-vision");
     }
     if let Some(host) = host {
@@ -190,6 +192,82 @@ fn mihomo_node(c: &Config, name: &str, o: &Value, host: Option<&crate::catalogue
         }
     }
     node
+}
+
+fn mihomo_managed_node(name: &str, o: &Value, host: Option<&crate::catalogue::Host>) -> Value {
+    let protocol = o["protocol"].as_str().expect("normalized core protocol");
+    let settings = &o["settings"];
+    let stream = &o["streamSettings"];
+    let tls = stream["security"] == "tls";
+    let mut node = match protocol {
+        "vmess" => json!({
+            "type":"vmess", "uuid":settings["id"], "alterId":0, "cipher":"auto",
+            "tls":tls, "servername":stream["tlsSettings"]["serverName"],
+            "client-fingerprint":stream["tlsSettings"]["fingerprint"],
+            "network":if stream["network"] == "raw" { "tcp" } else { stream["network"].as_str().unwrap() }
+        }),
+        "trojan" => json!({
+            "type":"trojan", "password":settings["password"],
+            "sni":stream["tlsSettings"]["serverName"],
+            "client-fingerprint":stream["tlsSettings"]["fingerprint"]
+        }),
+        "shadowsocks" => {
+            json!({"type":"ss","cipher":settings["method"],"password":settings["password"]})
+        }
+        "socks" | "http" => json!({
+            "type":if protocol == "socks" { "socks5" } else { "http" },
+            "tls":tls,"sni":stream["tlsSettings"]["serverName"],
+            "username":settings["user"],"password":settings["pass"]
+        }),
+        "hysteria" => json!({
+            "type":"hysteria2","password":stream["hysteriaSettings"]["auth"],
+            "sni":stream["tlsSettings"]["serverName"]
+        }),
+        _ => unreachable!("managed inbound without a Mihomo format"),
+    };
+    node["name"] = json!(name);
+    node["server"] = settings["address"].clone();
+    node["port"] = settings["port"].clone();
+    node["udp"] = json!(protocol != "http" && host.is_none_or(|host| host.mihomo_udp));
+    mihomo_transport(&mut node, stream);
+    if let Some(host) = host {
+        node["ip-version"] = json!(host.mihomo_ip_version);
+        if !host.alpn.is_empty() {
+            node["alpn"] = json!(host.alpn);
+        }
+    }
+    node
+}
+
+fn mihomo_transport(node: &mut Value, stream: &Value) {
+    match stream["network"].as_str() {
+        Some("ws") => {
+            node["alpn"] = json!(["http/1.1"]);
+            node["ws-opts"] = stream["wsSettings"].clone();
+        }
+        Some("xhttp") => {
+            node["alpn"] = json!(["h2", "http/1.1"]);
+            node["xhttp-opts"] = stream["xhttpSettings"].clone();
+        }
+        Some("raw") if node["network"].is_string() => node["network"] = json!("tcp"),
+        Some("grpc") => {
+            node["network"] = json!("grpc");
+            node["alpn"] = json!(["h2"]);
+            node["grpc-opts"] = json!({"grpc-service-name":stream["grpcSettings"]["serviceName"]});
+        }
+        Some("httpupgrade") => {
+            node["network"] = json!("ws");
+            node["alpn"] = json!(["http/1.1"]);
+            node["ws-opts"] = json!({
+                "path":stream["httpupgradeSettings"]["path"],
+                "v2ray-http-upgrade":true
+            });
+            if let Some(host) = stream["httpupgradeSettings"]["host"].as_str() {
+                node["ws-opts"]["headers"]["Host"] = json!(host);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn mihomo_weighted(c: &Config, s: &Secrets, browser_login: Option<&str>) -> Result<Vec<u8>> {
@@ -207,7 +285,10 @@ fn weighted_proxies(
     for proxy in &proxies {
         let name = proxy["name"].as_str().context("Proxy name missing")?;
         manual.push(name);
-        if proxy["network"] == "tcp" {
+        if proxy["type"] != "vless"
+            || !matches!(proxy["network"].as_str(), Some("xhttp" | "ws"))
+            || proxy["ws-opts"]["v2ray-http-upgrade"] == true
+        {
             continue;
         }
         let protocol = if proxy["reality-opts"].is_object() {
@@ -307,15 +388,39 @@ pub fn device_profiles(
     identity.xhttp_uuid = id.to_string();
     identity.ws_uuid = id.to_string();
     identity.reality_uuid = id.to_string();
+    let native = format.strip_prefix("native-hysteria/");
+    if let Some(id) = native {
+        ensure!(
+            id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "bad_request"
+        );
+    }
     match format {
-        "xray" => {
+        known
+            if ["xray", "xray-config", "links", "qr", "native-list"].contains(&known)
+                || native.is_some() =>
+        {
             let mut profiles = profiles(c, &identity)?;
             profiles["profiles"].as_array_mut().unwrap().extend(
                 crate::catalogue::client_entries(c, s, id, groups, Format::Xray)?
                     .into_iter()
                     .map(|entry| json!({"name":entry.name,"outbound":entry.outbound})),
             );
-            Ok(serde_json::to_vec_pretty(&profiles)?)
+            match format {
+                _ if native.is_some() || format == "native-list" => Ok(serde_json::to_vec_pretty(
+                    &client_export::native_profiles(&profiles, native)?,
+                )?),
+                "xray-config" => Ok(serde_json::to_vec_pretty(&client_export::xray_config(
+                    &profiles,
+                )?)?),
+                "qr" => client_export::qr_sheet(&profiles),
+                "links" => Ok(client_export::links(&profiles)?
+                    .into_iter()
+                    .map(|link| format!("# {}\n{}\n", link.name, link.url))
+                    .collect::<String>()
+                    .into_bytes()),
+                _ => Ok(serde_json::to_vec_pretty(&profiles)?),
+            }
         }
         "mihomo" | "mihomo-weighted" => {
             let mut proxies = mihomo_nodes(c, &identity)?;
@@ -324,7 +429,7 @@ pub fn device_profiles(
             proxies.extend(
                 entries
                     .into_iter()
-                    .map(|entry| mihomo_node(c, &entry.name, &entry.outbound, entry.host)),
+                    .map(|entry| mihomo_node(&entry.name, &entry.outbound, entry.host)),
             );
             if format == "mihomo" {
                 Ok(serde_json::to_vec_pretty(&json!({"proxies":proxies}))?)

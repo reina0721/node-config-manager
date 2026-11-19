@@ -701,6 +701,10 @@ fn catalogue_validation_and_device_exports_preserve_builtins_and_group_scope() -
             transport: None,
             security: None,
             listener: None,
+            xhttp_mode: None,
+            flow: None,
+            vless_encryption: None,
+            fallback_parent: None,
         },
     );
     catalogue.hosts.insert(

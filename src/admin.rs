@@ -359,6 +359,10 @@ async fn handle(
                 | "invalid_inbound_stack"
                 | "invalid_inbound_remark"
                 | "invalid_inbound_path"
+                | "invalid_xhttp_mode"
+                | "invalid_vless_flow"
+                | "invalid_vless_encryption"
+                | "invalid_fallback_parent"
                 | "inbound_path_conflict"
                 | "invalid_inbound_port"
                 | "inbound_port_conflict"
@@ -406,6 +410,10 @@ async fn handle(
                     Some("path")
                 }
                 "invalid_inbound_port" | "inbound_port_conflict" => Some("port"),
+                "invalid_xhttp_mode" => Some("xhttp_mode"),
+                "invalid_vless_flow" => Some("flow"),
+                "invalid_vless_encryption" => Some("vless_encryption"),
+                "invalid_fallback_parent" => Some("fallback_parent"),
                 "invalid_proxy_username" | "proxy_user_exists" => Some("username"),
                 "invalid_proxy_password" => Some("password"),
                 "invalid_proxy_device_limit" => Some("device_limit"),
@@ -439,6 +447,12 @@ fn remedy(code: &str) -> &str {
         "invalid_inbound_stack" => "请选择核心支持的传输、安全层和监听组合。",
         "invalid_inbound_remark" => "入站备注不能为空，最长 120 字节。",
         "invalid_inbound_path" => "请按传输类型填写有效路径。Raw TCP 无需填写路径。",
+        "invalid_xhttp_mode" => "XHTTP 模式只能用于 VLESS + XHTTP 入站。",
+        "invalid_vless_flow" => "此流控设置支持 VLESS Raw TCP + TLS 或 REALITY。",
+        "invalid_vless_encryption" => "仅可在 VLESS Raw TCP + TLS 上配置独立的 VLESS 加密选项。",
+        "invalid_fallback_parent" => {
+            "请选择未分配回落的 VLESS Raw TCP + TLS 父入站，父入站需关闭 VLESS 协议内加密。"
+        }
         "inbound_path_conflict" => "传输路径和已有入口、站点或保留路径重叠。",
         "invalid_inbound_port" => "独立监听需使用 1024–65535；共享监听使用现有 HTTPS 端口。",
         "inbound_port_conflict" => "此端口已分配给节点或保留服务，请换一个端口。",

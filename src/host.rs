@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::{Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UdpSocket},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -327,31 +327,42 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
         !crate::catalogue::requires_access(&c) || crate::proxy_access::enabled(store)?,
         "managed_inbounds_require_proxy_access"
     );
-    let dedicated_ports = |config: &Config| {
+    let dedicated_sockets = |config: &Config| {
         config
             .management
             .iter()
             .flat_map(|m| m.active_inbounds())
-            .filter(|(_, inbound)| inbound.dedicated())
-            .map(|(_, inbound)| inbound.port)
+            .flat_map(|(_, inbound)| {
+                [
+                    inbound.tcp_listener().then_some((inbound.port, "tcp")),
+                    inbound.udp_listener().then_some((inbound.port, "udp")),
+                ]
+                .into_iter()
+                .flatten()
+            })
             .collect::<BTreeSet<_>>()
     };
-    let candidate_ports = dedicated_ports(&c);
-    if !candidate_ports.is_empty() {
+    let candidate_sockets = dedicated_sockets(&c);
+    if !candidate_sockets.is_empty() {
         let current = store
             .pointer("current")?
             .map(|id| store.verify(&id))
             .transpose()?;
-        let active_dedicated_ports = current
+        let active_sockets = current
             .as_ref()
-            .map(|(config, _)| dedicated_ports(config))
+            .map(|(config, _)| dedicated_sockets(config))
             .unwrap_or_default();
-        for &port in candidate_ports.difference(&active_dedicated_ports) {
-            let addresses = ["0.0.0.0", "::"];
-            let count = if c.node.ipv6.is_empty() { 1 } else { 2 };
+        let addresses = ["0.0.0.0", "::"];
+        let count = if c.node.ipv6.is_empty() { 1 } else { 2 };
+        for &(port, network) in candidate_sockets.difference(&active_sockets) {
             for address in &addresses[..count] {
-                TcpListener::bind((*address, port)).with_context(|| {
-                    format!("Cannot bind managed inbound TCP port {port} on {address}")
+                let endpoint = (*address, port);
+                let available = match network {
+                    "tcp" => TcpListener::bind(endpoint).map(drop),
+                    _ => UdpSocket::bind(endpoint).map(drop),
+                };
+                available.with_context(|| {
+                    format!("Cannot bind managed inbound {network} port {port} on {address}")
                 })?;
             }
         }
@@ -360,7 +371,7 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
         .into_iter()
         .chain(
             managed()
-                .filter(|(_, inbound)| !inbound.dedicated())
+                .filter(|(_, inbound)| inbound.uses_nginx())
                 .map(|(_, inbound)| &inbound.path),
         )
     {
@@ -1936,8 +1947,15 @@ fn health(store: &Store, c: &Config, s: &Secrets, reference: &Reference) -> Resu
                     address: "127.0.0.1".into(),
                     port: target.port(c),
                 };
-                let outbound =
-                    catalogue::client_outbound(c, s, target, None, Some(&endpoint), health_id)?;
+                let outbound = catalogue::client_outbound(
+                    c,
+                    s,
+                    target,
+                    None,
+                    Some(&endpoint),
+                    health_id,
+                    catalogue::HEALTH_ALIAS,
+                )?;
                 check_client_outbound(reference, outbound)
                     .with_context(|| format!("Managed inbound {id} handshake failed"))?;
             }
@@ -1963,6 +1981,7 @@ fn health(store: &Store, c: &Config, s: &Secrets, reference: &Reference) -> Resu
                         Some(host),
                         Some(&endpoint),
                         credential,
+                        &catalogue::host_probe_alias(id),
                     )?;
                     check_client_outbound(reference, outbound)
                         .with_context(|| format!("Managed host {id} handshake failed"))?;
@@ -2105,14 +2124,11 @@ pub fn renew(store: &Store) -> Result<()> {
         &["-t", "-c", path(&store.release(&id)?.join("nginx.conf"))?],
     )?;
     command("systemctl", &["reload", "nginx"])?;
-    let uses_raw_tls = c
+    let uses_direct_tls = c
         .management
         .iter()
         .flat_map(|m| m.active_inbounds())
-        .any(|(_, inbound)| {
-            inbound.stack().transport == crate::catalogue::Transport::Raw
-                && inbound.stack().security == crate::catalogue::Security::Tls
-        });
+        .any(|(_, inbound)| inbound.owns_tls());
     let mut reload_xray = false;
     // Refresh certificates in the receipt so a later rollback can still check
     // binaries against their original pins after legitimate renewal.
@@ -2139,7 +2155,7 @@ pub fn renew(store: &Store) -> Result<()> {
         for (file, hash) in new {
             if file.ends_with("/fullchain.pem") || file.ends_with("/privkey.pem") {
                 reload_xray |=
-                    uses_raw_tls && release == id && r.dependencies.get(&file) != Some(&hash);
+                    uses_direct_tls && release == id && r.dependencies.get(&file) != Some(&hash);
                 r.dependencies.insert(file, hash);
             }
         }

@@ -33,6 +33,7 @@ pub fn xray(store: &Store) -> Result<Value> {
                 if [
                     "clients",
                     "users",
+                    "accounts",
                     "privateKey",
                     "shortIds",
                     "decryption",
@@ -41,6 +42,7 @@ pub fn xray(store: &Store) -> Result<Value> {
                     "user",
                     "pass",
                     "password",
+                    "auth",
                 ]
                 .contains(&key.as_str())
                 {

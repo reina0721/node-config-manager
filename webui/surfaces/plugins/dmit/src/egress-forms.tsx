@@ -44,14 +44,22 @@ export function UpstreamForm({
   const [username, setUsername] = useState('');
   const [secret, setSecret] = useState('');
   const [clear, setClear] = useState(false);
+  const protocol = data.protocol;
+  const needsUsername =
+    protocol === 'socks5' || protocol === 'socks5-tls' || protocol === 'https-connect';
+  const needsUuid = protocol === 'vless' || protocol === 'vmess';
+  const needsSni =
+    protocol !== 'socks5' && protocol !== 'shadowsocks' && protocol !== 'shadowsocks-2022';
   const setPassword = (value: string, user: string) => {
     setSecret(value);
     writeCredential(
-      value
-        ? data.protocol === 'vless'
-          ? { kind: 'vless', id: value }
-          : { kind: 'password', username: user, password: value }
-        : undefined,
+      !value
+        ? undefined
+        : protocol === 'vless' || protocol === 'vmess'
+          ? { kind: protocol, id: value }
+          : needsUsername
+            ? { kind: 'password', username: user, password: value }
+            : { kind: 'secret', secret: value },
       false,
     );
   };
@@ -68,8 +76,14 @@ export function UpstreamForm({
         value={data.protocol}
         options={[
           { value: 'socks5', label: 'SOCKS5' },
+          { value: 'socks5-tls', label: 'SOCKS5 TLS' },
           { value: 'https-connect', label: 'HTTPS CONNECT' },
           { value: 'vless', label: 'VLESS TLS' },
+          { value: 'vmess', label: 'VMess TLS' },
+          { value: 'trojan', label: 'Trojan TLS' },
+          { value: 'shadowsocks', label: 'Shadowsocks AES-256-GCM' },
+          { value: 'shadowsocks-2022', label: 'Shadowsocks-2022 AES-128-GCM' },
+          { value: 'hysteria2', label: 'Hysteria2' },
         ]}
         onValueChange={(value) => {
           setSecret('');
@@ -94,7 +108,7 @@ export function UpstreamForm({
         }
         onChange={(e) => update({ ...data, port: Number(e.target.value) })}
       />
-      {data.protocol !== 'socks5' && (
+      {needsSni && (
         <TextField
           label={t('catalogue.sni')}
           value={data.server_name}
@@ -114,7 +128,7 @@ export function UpstreamForm({
       />
       {!clear && (
         <>
-          {data.protocol !== 'vless' && (
+          {needsUsername && (
             <TextField
               label={t('access.username')}
               value={username}
@@ -128,7 +142,7 @@ export function UpstreamForm({
             purpose="current"
             showLabel={t('common.show')}
             hideLabel={t('common.hide')}
-            label={data.protocol === 'vless' ? label('uuid') : t('access.password')}
+            label={needsUuid ? label('uuid') : t('access.password')}
             hint={label('credentialHint')}
             value={secret}
             onChange={(e) => setPassword(e.target.value, username)}

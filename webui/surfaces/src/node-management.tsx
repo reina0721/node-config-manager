@@ -26,9 +26,12 @@ import type {
   PanelSettings,
   XrayView,
   VersionsView,
+  NativeProfile,
 } from './node-model';
 export * from './node-model';
 export type ClientExportFormat = 'xray' | 'mihomo' | 'mihomo-weighted';
+export type DeviceExportFormat =
+  ClientExportFormat | 'subscriptions' | 'xray-config' | 'links' | 'qr' | NativeProfile['format'];
 export type NodeManagementPort = Readonly<{
   overview: () => Promise<NodeOverview>;
   configuration: () => Promise<ConfigurationView>;
@@ -43,10 +46,8 @@ export type NodeManagementPort = Readonly<{
   changeProxyAccess: (input: ProxyAccessChange) => Promise<ProxyAccess>;
   downloadProxyUsers: () => Promise<void>;
   importProxyUsers: () => Promise<ProxyAccess | null>;
-  downloadProxyProfile: (
-    device: string,
-    format: ClientExportFormat | 'subscriptions',
-  ) => Promise<void>;
+  nativeProfiles: (device: string) => Promise<NativeProfile[]>;
+  downloadProxyProfile: (device: string, format: DeviceExportFormat) => Promise<void>;
   unlock: (token: string) => Promise<string>;
   preview: (config: NodeConfiguration, unlock?: string) => Promise<ConfigPlan>;
   previewCatalogue: (edit: CatalogueEdit, base: string) => Promise<ConfigPlan>;

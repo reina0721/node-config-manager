@@ -248,7 +248,7 @@ pub(super) fn restart(store: &Store) -> Result<()> {
 
 pub fn prepare(store: &Store) -> Result<()> {
     let (id, source) = installed_source(store)?;
-    let (config, _) = store.verify(&id)?;
+    let (config, secrets) = store.verify(&id)?;
     check_ports(&config)?;
     let database = Access(store)
         .read()?
@@ -267,7 +267,7 @@ pub fn prepare(store: &Store) -> Result<()> {
         .map(|_| host::probe_origin(store, &id))
         .transpose()?;
     overlay(
-        &config,
+        (&config, &secrets),
         &database,
         &mut json,
         GATE,
@@ -313,10 +313,6 @@ pub fn launch(check: bool) -> Result<()> {
     Err(command.args(["-config", GENERATED]).exec().into())
 }
 
-fn alias(id: uuid::Uuid) -> String {
-    format!("device-{}", store::digest(id.as_bytes()))
-}
-
 pub(super) fn managed_tags(config: &Config) -> BTreeMap<String, uuid::Uuid> {
     config
         .management
@@ -354,12 +350,8 @@ pub(super) fn backend_for(path: &Path, ingress: &str) -> std::path::PathBuf {
     path.with_file_name(format!("{ingress}.sock"))
 }
 
-fn probe_alias(id: uuid::Uuid) -> String {
-    format!("nodectl-managed-host-check-{id}")
-}
-
 pub(super) fn overlay(
-    config: &Config,
+    source: (&Config, &crate::config::Secrets),
     database: &Database,
     xray: &mut Value,
     gate: SocketAddr,
@@ -367,13 +359,14 @@ pub(super) fn overlay(
     relay_pin: &str,
     probe: Option<&(String, u16)>,
 ) -> Result<()> {
+    let (config, secrets) = source;
     let inbounds = xray["inbounds"]
         .as_array_mut()
         .context("Missing Xray inbounds")?;
     let mut tags = vec![];
     let managed = managed_tags(config);
     let ingress_routing = crate::egress::needs_ingress(config);
-    let health_email = "nodectl-proxy-health";
+    use crate::catalogue::{HEALTH_ALIAS, device_alias, host_probe_alias};
     let hosts = config
         .management
         .iter()
@@ -396,25 +389,11 @@ pub(super) fn overlay(
                 .map(|inbound| (*id, inbound))
         });
         ensure!(
-            (PUBLIC_TAGS.contains(&tag) || managed_id.is_some()) && inbound["protocol"] == "vless",
-            "Unexpected Xray inbound"
+            PUBLIC_TAGS.contains(&tag) || managed_id.is_some(),
+            "Unexpected Xray inbound tag"
         );
         tags.push(tag.to_owned());
-        let original = &inbound["settings"]["clients"][0];
-        ensure!(
-            original["id"].is_string(),
-            "Missing Xray VLESS client template"
-        );
-        let client = |device: uuid::Uuid, email: &str| {
-            let id = managed_inbound.map_or(device, |(id, inbound)| {
-                crate::catalogue::inbound_user(id, inbound, device)
-            });
-            let mut entry = original.clone();
-            entry["id"] = json!(id);
-            entry["email"] = json!(email);
-            entry
-        };
-        let mut accounts = vec![client(database.health_id, health_email)];
+        let mut accounts = vec![(database.health_id, HEALTH_ALIAS.to_owned())];
         for &(id, target) in &host_probes {
             let matches = if let Some(managed_id) = managed_id {
                 target == managed_id.to_string()
@@ -424,9 +403,9 @@ pub(super) fn overlay(
                     == Some(target)
             };
             if matches {
-                accounts.push(client(
+                accounts.push((
                     crate::catalogue::host_probe_id(database.health_id, id),
-                    &probe_alias(id),
+                    host_probe_alias(id),
                 ));
             }
         }
@@ -445,9 +424,9 @@ pub(super) fn overlay(
                         })
                     })
                 })
-                .map(|(id, _)| client(*id, &alias(*id))),
+                .map(|(id, _)| (*id, device_alias(*id))),
         );
-        inbound["settings"]["clients"] = json!(accounts);
+        crate::catalogue::replace_accounts(inbound, managed_inbound, secrets, accounts)?;
     }
     ensure!(tags.len() >= 3, "Incomplete managed Xray inbounds");
 
@@ -488,7 +467,7 @@ pub(super) fn overlay(
         destination_ip.push(&config.node.ipv6);
     }
     for (id, device) in &database.devices {
-        let user = alias(*id);
+        let user = device_alias(*id);
         let portal = format!("portal-{user}");
         let transit = format!("transit-{user}");
         rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":PORT.to_string(),
@@ -551,7 +530,7 @@ pub(super) fn overlay(
             rules.push(rule.clone());
             let mut probe = rule;
             probe["inboundTag"] = json!(tags);
-            probe["user"] = json!([health_email]);
+            probe["user"] = json!([HEALTH_ALIAS]);
             rules.push(probe);
         }
     }
@@ -561,7 +540,7 @@ pub(super) fn overlay(
         rules.extend(crate::egress::routing(config, &backend_tags));
     }
     if let Some((target, port)) = probe {
-        let mut rule = json!({"type":"field", "inboundTag":tags,"user":host_probes.iter().map(|(id, _)| probe_alias(*id)).collect::<Vec<_>>(),"network":"tcp","port":port.to_string(),"outboundTag":"direct"});
+        let mut rule = json!({"type":"field", "inboundTag":tags,"user":host_probes.iter().map(|(id, _)| host_probe_alias(*id)).collect::<Vec<_>>(),"network":"tcp","port":port.to_string(),"outboundTag":"direct"});
         if target.parse::<std::net::IpAddr>().is_ok() {
             rule["ip"] = json!([target]);
         } else {
@@ -570,7 +549,7 @@ pub(super) fn overlay(
         rules.push(rule);
     }
     rules.push(
-        json!({"type":"field","inboundTag":tags,"user":[health_email],"outboundTag":"direct"}),
+        json!({"type":"field","inboundTag":tags,"user":[HEALTH_ALIAS],"outboundTag":"direct"}),
     );
     rules.push(json!({"type":"field","inboundTag":tags,"outboundTag":"block"}));
     xray["routing"]["rules"] = json!(rules);

@@ -88,7 +88,7 @@ fn validate_compatibility(store: &Store, version: [u64; 3]) -> Result<()> {
         version >= ACCESS_MINIMUM || !proxy_access::enabled(store)?,
         "version_auth_incompatible"
     );
-    if version < TRANSPORT_MINIMUM {
+    if version < stable_version(env!("CARGO_PKG_VERSION"))? {
         let minimum = snapshot_minimum(store)?;
         ensure!(
             version >= minimum,

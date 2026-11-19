@@ -4,6 +4,7 @@ use crate::{
     config::{self, Config, Secrets},
 };
 use anyhow::{Context, Result, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,8 +15,24 @@ use uuid::Uuid;
 #[serde(rename_all = "kebab-case")]
 pub enum Protocol {
     Socks5,
+    Socks5Tls,
     HttpsConnect,
     Vless,
+    Vmess,
+    Trojan,
+    Shadowsocks,
+    #[serde(rename = "shadowsocks-2022")]
+    Shadowsocks2022,
+    Hysteria2,
+}
+
+impl Protocol {
+    fn tls(self) -> bool {
+        !matches!(
+            self,
+            Self::Socks5 | Self::Shadowsocks | Self::Shadowsocks2022
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -34,13 +51,16 @@ pub struct Upstream {
 pub enum Credential {
     Password { username: String, password: String },
     Vless { id: String },
+    Vmess { id: String },
+    Secret { secret: String },
 }
 
 impl Credential {
     pub fn sensitive(&self) -> Vec<&str> {
         match self {
             Self::Password { username, password } => vec![username, password],
-            Self::Vless { id } => vec![id],
+            Self::Vless { id } | Self::Vmess { id } => vec![id],
+            Self::Secret { secret } => vec![secret],
         }
     }
 }
@@ -101,23 +121,24 @@ pub fn validate(config: &Config, secrets: &Secrets) -> Result<()> {
             "Invalid upstream address"
         );
         ensure!(
-            if upstream.protocol == Protocol::Socks5 {
-                upstream.server_name.is_empty()
-            } else {
+            if upstream.protocol.tls() {
                 config::domain(&upstream.server_name)
+            } else {
+                upstream.server_name.is_empty()
             },
             "TLS upstream needs a verified server name"
         );
         match (upstream.protocol, secrets.upstreams.get(id)) {
-            (Protocol::Vless, Some(Credential::Vless { id })) => {
+            (Protocol::Vless, Some(Credential::Vless { id }))
+            | (Protocol::Vmess, Some(Credential::Vmess { id })) => {
                 ensure!(
                     Uuid::parse_str(id).is_ok_and(|id| !id.is_nil()),
-                    "Invalid VLESS upstream credential"
+                    "Invalid upstream UUID"
                 );
             }
-            (Protocol::Vless, None) if !upstream.enabled => {}
+            (_, None) if !upstream.enabled => {}
             (
-                Protocol::Socks5 | Protocol::HttpsConnect,
+                Protocol::Socks5 | Protocol::Socks5Tls | Protocol::HttpsConnect,
                 Some(Credential::Password { username, password }),
             ) => {
                 ensure!(
@@ -131,7 +152,28 @@ pub fn validate(config: &Config, secrets: &Secrets) -> Result<()> {
                     "Invalid upstream credential"
                 );
             }
-            (Protocol::Socks5 | Protocol::HttpsConnect, None) => {}
+            (Protocol::Socks5 | Protocol::Socks5Tls | Protocol::HttpsConnect, None) => {}
+            (
+                Protocol::Trojan | Protocol::Shadowsocks | Protocol::Hysteria2,
+                Some(Credential::Secret { secret }),
+            ) => {
+                ensure!(
+                    !secret.is_empty()
+                        && secret.len() <= 256
+                        && !secret.chars().any(char::is_control),
+                    "Invalid upstream secret"
+                );
+            }
+            (Protocol::Shadowsocks2022, Some(Credential::Secret { secret })) => {
+                let keys = secret.split(':').collect::<Vec<_>>();
+                ensure!(
+                    keys.len() <= 2
+                        && keys
+                            .iter()
+                            .all(|key| STANDARD.decode(key).is_ok_and(|key| key.len() == 16)),
+                    "Shadowsocks-2022 needs one or two base64 AES-128 keys"
+                );
+            }
             _ => anyhow::bail!("Invalid credential for upstream protocol"),
         }
     }
@@ -289,17 +331,20 @@ fn effective(c: &Config, target: &str) -> String {
 pub fn upstream(id: Uuid, node: &Upstream, credential: Option<&Credential>) -> Result<Value> {
     let mut server = json!({"address":node.address,"port":node.port});
     let mut result = json!({"tag":tag(id)});
-    if node.protocol != Protocol::Socks5 {
+    if node.protocol.tls() {
         result["streamSettings"] = json!({"network":"tcp","security":"tls","tlsSettings":{
             "serverName":node.server_name,"allowInsecure":false,"minVersion":"1.3"
         }});
     }
     match node.protocol {
-        Protocol::Socks5 | Protocol::HttpsConnect => {
+        Protocol::Socks5 | Protocol::Socks5Tls | Protocol::HttpsConnect => {
             if let Some(Credential::Password { username, password }) = credential {
                 server["users"] = json!([{"user":username,"pass":password}]);
             }
-            result["protocol"] = json!(if node.protocol == Protocol::Socks5 {
+            if node.protocol == Protocol::Socks5Tls {
+                result["streamSettings"]["tlsSettings"]["alpn"] = json!(["http/1.1"]);
+            }
+            result["protocol"] = json!(if node.protocol != Protocol::HttpsConnect {
                 "socks"
             } else {
                 "http"
@@ -313,6 +358,45 @@ pub fn upstream(id: Uuid, node: &Upstream, credential: Option<&Credential>) -> R
             server["users"] = json!([{"id":id,"encryption":"none"}]);
             result["protocol"] = json!("vless");
             result["settings"] = json!({"vnext":[server]});
+        }
+        Protocol::Vmess => {
+            let Some(Credential::Vmess { id }) = credential else {
+                anyhow::bail!("Missing VMess upstream UUID");
+            };
+            server["id"] = json!(id);
+            server["security"] = json!("auto");
+            result["protocol"] = json!("vmess");
+            result["settings"] = server;
+        }
+        protocol => {
+            let Some(Credential::Secret { secret }) = credential else {
+                anyhow::bail!("Missing upstream secret");
+            };
+            match protocol {
+                Protocol::Trojan => {
+                    server["password"] = json!(secret);
+                    result["protocol"] = json!("trojan");
+                }
+                Protocol::Shadowsocks | Protocol::Shadowsocks2022 => {
+                    server["password"] = json!(secret);
+                    server["method"] = json!(if protocol == Protocol::Shadowsocks2022 {
+                        "2022-blake3-aes-128-gcm"
+                    } else {
+                        "aes-256-gcm"
+                    });
+                    result["protocol"] = json!("shadowsocks");
+                }
+                Protocol::Hysteria2 => {
+                    result["protocol"] = json!("hysteria");
+                    result["streamSettings"]["network"] = json!("hysteria");
+                    result["streamSettings"]["tlsSettings"]["alpn"] = json!(["h3"]);
+                    result["streamSettings"]["hysteriaSettings"] =
+                        json!({"version":2,"auth":secret});
+                    server["version"] = json!(2);
+                }
+                _ => unreachable!("handled authenticated upstream"),
+            }
+            result["settings"] = server;
         }
     }
     Ok(result)

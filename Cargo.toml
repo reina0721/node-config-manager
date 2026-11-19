@@ -1,7 +1,7 @@
 [package]
 name = "nodectl"
 default-run = "nodectl"
-version = "0.8.2"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.99.1"
 repository = "https://github.com/reina0721/node-config-manager"
@@ -37,6 +37,7 @@ tempfile = "3"
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+qrcode = { version = "0.14.1", default-features = false }
 
 [features]
 # Only isolated integration builds include explicit fault injection.

@@ -12,6 +12,36 @@ export const protocols = {
   reality: 'VLESS REALITY',
 } as const;
 
+export const managedProtocolNames: Record<InboundCombination['protocol'], string> = {
+  vless: 'VLESS',
+  vmess: 'VMess',
+  trojan: 'Trojan',
+  shadowsocks: 'Shadowsocks',
+  'shadowsocks-2022': 'Shadowsocks-2022',
+  http: 'HTTP CONNECT',
+  mixed: 'Mixed (HTTP / SOCKS5)',
+  hysteria2: 'Hysteria2',
+};
+export const transportNames: Record<InboundStack['transport'], string> = {
+  raw: 'Raw TCP',
+  xhttp: 'XHTTP',
+  ws: 'WebSocket',
+  hysteria: 'QUIC (Hysteria2)',
+  grpc: 'gRPC',
+  httpupgrade: 'HTTPUpgrade',
+  mkcp: 'mKCP',
+};
+
+export function hasHttpPath(transport: InboundStack['transport']) {
+  return transport === 'xhttp' || transport === 'ws' || transport === 'httpupgrade';
+}
+
+export function managedProtocol(
+  protocol: ManagedInbound['protocol'],
+): InboundCombination['protocol'] {
+  return protocol === 'xhttp' || protocol === 'ws' || protocol === 'reality' ? 'vless' : protocol;
+}
+
 const legacyStacks = {
   xhttp: { transport: 'xhttp', security: 'tls', listener: 'shared-https' },
   ws: { transport: 'ws', security: 'tls', listener: 'shared-https' },
@@ -20,7 +50,9 @@ const legacyStacks = {
 
 export function inboundStack(inbound: ManagedInbound | keyof typeof protocols): InboundStack {
   if (typeof inbound === 'string') return legacyStacks[inbound];
-  if (inbound.protocol !== 'vless') return legacyStacks[inbound.protocol];
+  if (inbound.protocol === 'xhttp' || inbound.protocol === 'ws' || inbound.protocol === 'reality') {
+    return legacyStacks[inbound.protocol];
+  }
   return {
     transport: inbound.transport ?? 'xhttp',
     security: inbound.security ?? 'tls',
@@ -30,8 +62,28 @@ export function inboundStack(inbound: ManagedInbound | keyof typeof protocols): 
 
 export function inboundLabel(inbound: ManagedInbound) {
   const stack = inboundStack(inbound);
-  const transport = { raw: 'Raw TCP', xhttp: 'XHTTP', ws: 'WebSocket' }[stack.transport];
-  return ['VLESS', transport, stack.security === 'tls' ? 'TLS' : 'REALITY'].join(' · ');
+  const protocol = managedProtocolNames[managedProtocol(inbound.protocol)];
+  return [
+    protocol,
+    transportNames[stack.transport],
+    stack.security === 'none' ? '' : stack.security.toUpperCase(),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+export function fallbackParents(config: NodeConfiguration, enabled: boolean) {
+  return Object.entries(config.management?.inbounds ?? {}).filter(([, inbound]) => {
+    const stack = inboundStack(inbound);
+    return (
+      inbound.protocol === 'vless' &&
+      stack.transport === 'raw' &&
+      stack.security === 'tls' &&
+      stack.listener === 'dedicated' &&
+      !(inbound.vless_encryption ?? config.vless?.encryption) &&
+      (!enabled || inbound.enabled)
+    );
+  });
 }
 
 export function inboundErrors(
@@ -40,7 +92,7 @@ export function inboundErrors(
   id: string | null,
 ) {
   const stack = inboundStack(inbound);
-  const errors: Partial<Record<'remark' | 'path' | 'port', string>> = {};
+  const errors: Partial<Record<'remark' | 'path' | 'port' | 'fallback_parent', string>> = {};
   if (
     !inbound.remark.trim() ||
     new TextEncoder().encode(inbound.remark).length > 120 ||
@@ -50,6 +102,12 @@ export function inboundErrors(
   const others = Object.entries(config.management?.inbounds ?? {}).filter(
     ([other]) => other !== id,
   );
+  if (
+    stack.listener === 'fallback' &&
+    (!fallbackParents(config, inbound.enabled).some(([key]) => key === inbound.fallback_parent) ||
+      others.some(([, entry]) => entry.fallback_parent === inbound.fallback_parent))
+  )
+    errors.fallback_parent = 'catalogue.fallbackParentError';
   if (stack.listener === 'dedicated') {
     const reserved = [
       config.ports.http,
@@ -72,8 +130,12 @@ export function inboundErrors(
       errors.port = 'catalogue.portConflict';
     }
   }
+  if (stack.transport === 'grpc') {
+    if (!/^[a-zA-Z0-9_.-]{1,128}$/.test(inbound.path)) errors.path = 'catalogue.grpcServiceError';
+    return errors;
+  }
   if (
-    stack.transport === 'raw' ||
+    !hasHttpPath(stack.transport) ||
     (stack.listener === 'dedicated' && inbound.protocol === 'vless' && inbound.path === '/')
   )
     return errors;

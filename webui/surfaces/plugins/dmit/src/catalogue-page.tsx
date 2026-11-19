@@ -132,7 +132,12 @@ function managedRows(config: NodeConfiguration, kind: Kind): Row[] {
       return Object.entries(m?.inbounds ?? {}).map(([id, value]) => ({
         id,
         name: value.remark,
-        detail: inboundLabel(value) + ' · ' + (value.port || config.ports.https),
+        detail:
+          inboundLabel(value) +
+          ' · ' +
+          (value.fallback_parent
+            ? (m?.inbounds?.[value.fallback_parent]?.port ?? '—')
+            : value.port || config.ports.https),
         enabled: value.enabled,
         edit: { id, kind, value },
       }));
@@ -302,7 +307,18 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
           <Section
             title={t('nav.' + names[kind])}
             action={
-              <Action disabled={busy} onPress={() => beginEdit(newItem(kind))}>
+              <Action
+                disabled={busy}
+                onPress={() => {
+                  const item = newItem(kind);
+                  const combination = query.data?.inbound_capabilities?.combinations[0];
+                  if (item.kind === 'inbound' && item.value && combination) {
+                    const { protocol, transport, security, listener } = combination;
+                    item.value = { ...item.value, protocol, transport, security, listener };
+                  }
+                  beginEdit(item);
+                }}
+              >
                 {t('catalogue.add')}
               </Action>
             }
@@ -436,7 +452,7 @@ export default function CataloguePage({ kind }: { kind: Kind }) {
                 )}
                 {edit.kind === 'inbound' && (
                   <InboundForm
-                    httpsPort={config.ports.https}
+                    config={config}
                     data={edit.value}
                     errors={fieldMessages}
                     combinations={query.data?.inbound_capabilities?.combinations}

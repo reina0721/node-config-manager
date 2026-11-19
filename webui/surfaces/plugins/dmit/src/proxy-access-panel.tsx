@@ -8,7 +8,8 @@ import { PasswordField, SwitchField, TextField } from '@community-go/ui-adapter/
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import {
   useNodeManagement,
-  type ClientExportFormat,
+  type DeviceExportFormat,
+  type NativeProfile,
   type ProxyAccess,
   type ProxyAccessChange,
 } from '../../../src/node-management';
@@ -17,7 +18,6 @@ import { ConsoleLink, Details, Timestamp, useNodeText } from './common';
 
 type User = ProxyAccess['users'][number];
 type NewUser = Extract<ProxyAccessChange, { action: 'create' }>['users'][number];
-type DeviceFormat = ClientExportFormat | 'subscriptions';
 type Confirm = Readonly<{ label: string; description: string; change: ProxyAccessChange }>;
 
 export default function ProxyAccessPanel({
@@ -257,6 +257,7 @@ export default function ProxyAccessPanel({
                 void perform(() => api.downloadProxyProfile(id, format), false);
               }}
               subscriptions={data.enabled && subscriptions}
+              extraFormats={data.extra_profile_formats ?? []}
               queue={(entry) =>
                 setBulk((items) => [
                   ...items.filter((item) => item.username !== entry.username),
@@ -352,6 +353,7 @@ function UserEditor({
   onDeviceDelete,
   download,
   subscriptions,
+  extraFormats,
   queue,
   queueFull,
 }: Readonly<{
@@ -363,12 +365,34 @@ function UserEditor({
   onCreated: () => void;
   onDelete: () => void;
   onDeviceDelete: (id: string) => void;
-  download: (id: string, format: DeviceFormat) => void;
+  download: (id: string, format: DeviceExportFormat) => void;
   subscriptions: boolean;
+  extraFormats: NonNullable<ProxyAccess['extra_profile_formats']>;
   queue: (entry: NewUser) => void;
   queueFull: boolean;
 }>) {
   const t = useNodeText();
+  const api = useNodeManagement();
+  const [native, setNative] = useState<{
+    device: string;
+    profiles: NativeProfile[];
+    error?: string;
+  }>();
+  const [loadingNative, setLoadingNative] = useState(false);
+  const showNative = async (device: string) => {
+    setLoadingNative(true);
+    try {
+      setNative({ device, profiles: await api.nativeProfiles(device) });
+    } catch (e) {
+      setNative({
+        device,
+        profiles: [],
+        error: e instanceof Error ? e.message : t('common.failed'),
+      });
+    } finally {
+      setLoadingNative(false);
+    }
+  };
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [limit, setLimit] = useState<string>();
@@ -533,6 +557,27 @@ function UserEditor({
                     >
                       {t('nodes.mihomoWeighted')}
                     </Action>
+                    {extraFormats
+                      .filter((format) => format !== 'native')
+                      .map((format) => (
+                        <Action
+                          key={format}
+                          variant="secondary"
+                          disabled={busy}
+                          onPress={() => download(row.id, format)}
+                        >
+                          {t('access.export-' + format)}
+                        </Action>
+                      ))}
+                    {extraFormats.includes('native') && (
+                      <Action
+                        variant="secondary"
+                        disabled={busy || loadingNative}
+                        onPress={() => void showNative(row.id)}
+                      >
+                        {t('access.nativeProfiles')}
+                      </Action>
+                    )}
                     {subscriptions ? (
                       <Action
                         variant="secondary"
@@ -550,6 +595,35 @@ function UserEditor({
                       {t('access.deleteDevice')}
                     </Action>
                   </div>
+                  {native?.device === row.id && (
+                    <div className="grid gap-2">
+                      {native.error ? (
+                        <AlertBanner
+                          icon="!"
+                          tone="danger"
+                          title={t('common.failed')}
+                          description={native.error}
+                        />
+                      ) : native.profiles.length ? (
+                        native.profiles.map((profile) => (
+                          <div className="grid min-w-0 gap-1" key={profile.format}>
+                            <p className="break-all text-sm">{profile.name}</p>
+                            <div>
+                              <Action
+                                variant="secondary"
+                                disabled={busy}
+                                onPress={() => download(row.id, profile.format)}
+                              >
+                                {t('access.downloadHysteria')}
+                              </Action>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <p role="status">{t('access.noNativeProfiles')}</p>
+                      )}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

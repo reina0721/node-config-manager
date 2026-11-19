@@ -1,14 +1,24 @@
 import { z } from 'zod';
 
 const toggle = z.object({ enabled: z.boolean() }).strict();
-const transportSchema = z.enum(['xhttp', 'ws', 'raw']);
-const securitySchema = z.enum(['tls', 'reality']);
-const listenerSchema = z.enum(['shared-https', 'dedicated']);
-const inboundProtocol = z.enum(['xhttp', 'ws', 'reality', 'vless']);
+const transportSchema = z.enum(['xhttp', 'ws', 'raw', 'hysteria', 'grpc', 'httpupgrade', 'mkcp']);
+const securitySchema = z.enum(['none', 'tls', 'reality']);
+const listenerSchema = z.enum(['shared-https', 'dedicated', 'fallback']);
+const managedProtocol = z.enum([
+  'vless',
+  'vmess',
+  'trojan',
+  'shadowsocks',
+  'shadowsocks-2022',
+  'http',
+  'mixed',
+  'hysteria2',
+]);
+const inboundProtocol = z.union([z.enum(['xhttp', 'ws', 'reality']), managedProtocol]);
 const inboundCapabilitiesSchema = z.object({
   combinations: z.array(
     z.object({
-      protocol: z.literal('vless'),
+      protocol: managedProtocol,
       transport: transportSchema,
       security: securitySchema,
       listener: listenerSchema,
@@ -31,6 +41,10 @@ const managedInboundSchema = z
     transport: transportSchema.optional(),
     security: securitySchema.optional(),
     listener: listenerSchema.optional(),
+    xhttp_mode: z.enum(['auto', 'packet-up', 'stream-up', 'stream-one']).optional(),
+    flow: z.enum(['none', 'vision']).optional(),
+    vless_encryption: z.boolean().optional(),
+    fallback_parent: z.string().uuid().optional(),
     path: z.string(),
     port: z.number().int(),
     enabled: z.boolean(),
@@ -70,7 +84,17 @@ const upstreamSchema = z
   .object({
     name: z.string(),
     enabled: z.boolean(),
-    protocol: z.enum(['socks5', 'https-connect', 'vless']),
+    protocol: z.enum([
+      'socks5',
+      'socks5-tls',
+      'https-connect',
+      'vless',
+      'vmess',
+      'trojan',
+      'shadowsocks',
+      'shadowsocks-2022',
+      'hysteria2',
+    ]),
     address: z.string(),
     port: z.number().int(),
     server_name: z.string(),
@@ -105,7 +129,9 @@ export type ManagedGroup = z.infer<typeof managedGroupSchema>;
 export type ManagedUpstream = z.infer<typeof upstreamSchema>;
 export type ManagedRule = z.infer<typeof routingRuleSchema>;
 export type UpstreamCredential =
-  { kind: 'password'; username: string; password: string } | { kind: 'vless'; id: string };
+  | { kind: 'password'; username: string; password: string }
+  | { kind: 'vless' | 'vmess'; id: string }
+  | { kind: 'secret'; secret: string };
 export type CatalogueEdit = { id: string | null } & (
   | { kind: 'inbound'; value: ManagedInbound | null }
   | { kind: 'host'; value: ManagedHost | null }
@@ -462,7 +488,13 @@ export type ProvisionOptions = Readonly<{
 export const proxyUsersSchema = z.array(
   z.object({ username: z.string(), device_limit: z.number().int().optional() }).strict(),
 );
+export const nativeProfileSchema = z.object({
+  name: z.string(),
+  format: z.templateLiteral(['native-hysteria/', z.string().regex(/^[a-f0-9]{64}$/)]),
+});
+export type NativeProfile = z.infer<typeof nativeProfileSchema>;
 export const proxyAccessSchema = z.object({
+  extra_profile_formats: z.array(z.enum(['xray-config', 'links', 'qr', 'native'])).optional(),
   enabled: z.boolean(),
   ttl_seconds: z.number(),
   portal: z.string(),

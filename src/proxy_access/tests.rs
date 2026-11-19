@@ -412,7 +412,7 @@ async fn real_xray_denies_unauthenticated_traffic_and_revokes_existing_connectio
         ]}},{"tag":"block","protocol":"blackhole"}]
     });
     runtime::overlay(
-        &config,
+        (&config, &store.inputs()?.1),
         &db,
         &mut server,
         address,

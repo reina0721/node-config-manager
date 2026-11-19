@@ -18,6 +18,7 @@ import {
   jobResultSchema,
   serviceSchema,
   adminFieldErrorSchema,
+  nativeProfileSchema,
   type AdminFieldError,
   type NodeManagementPort,
   type ClientExportFormat,
@@ -146,6 +147,13 @@ export function createAdminApi(
       const users = proxyUsersSchema.parse(JSON.parse(await file.text()));
       return request('proxy-access', proxyAccessSchema, { action: 'import', users });
     },
+    nativeProfiles: async (device) => {
+      const { content } = await request(
+        'proxy-access/profile/' + encodeURIComponent(device) + '/native-list',
+        z.object({ content: z.string() }),
+      );
+      return z.array(nativeProfileSchema).parse(JSON.parse(content));
+    },
     downloadProxyProfile: async (device, format) => {
       const { content } = await request(
         'proxy-access/profile/' + encodeURIComponent(device) + '/' + format,
@@ -153,8 +161,16 @@ export function createAdminApi(
       );
       if (format === 'subscriptions') {
         download('nodectl-device-subscriptions.json', 'application/json', content);
-      } else {
+      } else if (format === 'xray-config') {
+        download('nodectl-xray-client.json', 'application/json', content);
+      } else if (format === 'links') {
+        download('nodectl-share-links.txt', 'text/plain', content);
+      } else if (format === 'qr') {
+        download('nodectl-device-qr.svg', 'image/svg+xml', content);
+      } else if (format === 'xray' || format === 'mihomo' || format === 'mihomo-weighted') {
         downloadClients(format, content);
+      } else {
+        download('nodectl-hysteria2.json', 'application/json', content);
       }
     },
     overview: () => request('overview', overviewSchema),

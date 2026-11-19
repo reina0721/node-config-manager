@@ -11,7 +11,17 @@ import type {
 } from '../../../src/node-management';
 import { useNodeText } from './common';
 
-import { inboundStack, protocols, split, toggle } from './catalogue-fields';
+import {
+  fallbackParents,
+  hasHttpPath,
+  inboundStack,
+  managedProtocol,
+  managedProtocolNames,
+  protocols,
+  split,
+  toggle,
+  transportNames,
+} from './catalogue-fields';
 
 export function HostForm({
   data,
@@ -100,7 +110,7 @@ export function HostForm({
                 update({
                   ...data,
                   inbound,
-                  path: next.transport === 'raw' ? '' : data.path,
+                  path: !hasHttpPath(next.transport) ? '' : data.path,
                   alpn:
                     next.security === 'reality'
                       ? []
@@ -108,7 +118,7 @@ export function HostForm({
                           (value) => next.transport !== 'ws' || value === 'http/1.1',
                         ),
                   host_header:
-                    next.transport === 'raw' || next.security === 'reality' ? '' : data.host_header,
+                    !hasHttpPath(next.transport) || next.security !== 'tls' ? '' : data.host_header,
                 });
               }}
             />
@@ -126,17 +136,17 @@ export function HostForm({
         tab(
           'security',
           <>
-            {text('sni', label('inherit'))}
+            {stack.security !== 'none' && text('sni', label('inherit'))}
             {stack.security === 'tls' && list('alpn')}
           </>,
         ),
         tab(
           'advanced',
           <>
-            {stack.transport !== 'raw' &&
+            {hasHttpPath(stack.transport) &&
               stack.security === 'tls' &&
               text('host_header', label('inherit'))}
-            {stack.transport !== 'raw' && text('path', label('inherit'))}
+            {hasHttpPath(stack.transport) && text('path', label('inherit'))}
             <SelectField
               label={label('fingerprint')}
               options={[
@@ -196,29 +206,70 @@ export function HostForm({
 export function InboundForm({
   data,
   update,
-  httpsPort,
+  config,
   combinations,
   errors,
 }: Readonly<{
   data: ManagedInbound;
   update: (value: ManagedInbound) => void;
-  httpsPort: number;
+  config: NodeConfiguration;
   combinations: readonly InboundCombination[] | undefined;
   errors: Readonly<Record<string, string | undefined>>;
 }>) {
   const t = useNodeText();
   const stack = inboundStack(data);
+  const grpc = stack.transport === 'grpc';
   const dedicated = stack.listener === 'dedicated';
-  const transportLabel = { raw: 'Raw TCP', xhttp: 'XHTTP', ws: 'WebSocket' };
+  const fallback = stack.listener === 'fallback';
+  const ports = fallbackParents(config, data.enabled);
+  const port = dedicated
+    ? data.port
+    : fallback
+      ? (ports.find(([id]) => id === data.fallback_parent)?.[1].port ?? 0)
+      : config.ports.https;
+  const listenerLabels = {
+    'shared-https': t('catalogue.sharedHttps'),
+    dedicated: t(
+      stack.transport === 'hysteria' || stack.transport === 'mkcp'
+        ? 'catalogue.dedicatedUdp'
+        : 'catalogue.dedicated',
+    ),
+    fallback: t('catalogue.samePortFallback'),
+  };
+  const protocol = managedProtocol(data.protocol);
+  const supported = combinations?.filter((item) => item.protocol === protocol) ?? [];
+  const selected = supported.filter((item) => item.transport === stack.transport);
+  const securityLabels = {
+    none: t('catalogue.noTransportSecurity'),
+    tls: 'TLS',
+    reality: 'REALITY',
+  };
   const select = (selection: InboundCombination) => {
+    const { xhttp_mode, flow, vless_encryption, fallback_parent, ...common } = data;
     update({
-      ...data,
+      ...common,
+      ...(selection.protocol === 'vless' &&
+      selection.transport === 'raw' &&
+      selection.security === 'tls' &&
+      vless_encryption !== undefined
+        ? { vless_encryption }
+        : {}),
+      ...(selection.listener === 'fallback' && fallback_parent ? { fallback_parent } : {}),
+      ...(xhttp_mode && selection.protocol === 'vless' && selection.transport === 'xhttp'
+        ? { xhttp_mode }
+        : {}),
+      ...(flow && selection.protocol === 'vless' && selection.transport === 'raw' ? { flow } : {}),
       protocol: selection.protocol,
       transport: selection.transport,
       security: selection.security,
       listener: selection.listener,
-      path: selection.transport === 'raw' ? '' : data.path,
-      port: selection.listener === 'shared-https' ? 0 : data.port,
+      path:
+        (selection.transport === 'grpc') !== grpc
+          ? ''
+          : hasHttpPath(selection.transport) || grpc
+            ? data.path
+            : '',
+      port: selection.listener === 'dedicated' ? data.port : 0,
     });
   };
   return (
@@ -233,19 +284,26 @@ export function InboundForm({
         <>
           <SelectField
             label={t('nodes.protocol')}
-            value="vless"
-            options={[{ value: 'vless', label: 'VLESS' }]}
+            value={protocol}
+            options={[...new Set(combinations.map((item) => item.protocol))].map((value) => ({
+              value,
+              label: managedProtocolNames[value],
+            }))}
+            onValueChange={(value) => {
+              const next = combinations.find((item) => item.protocol === value);
+              if (next) select(next);
+            }}
           />
           <SelectField
             label={t('catalogue.transport')}
             value={stack.transport}
             error={errors.transport ?? ''}
-            options={[...new Set(combinations.map((item) => item.transport))].map((value) => ({
+            options={[...new Set(supported.map((item) => item.transport))].map((value) => ({
               value,
-              label: transportLabel[value],
+              label: transportNames[value],
             }))}
             onValueChange={(value) => {
-              const changes = combinations.filter((item) => item.transport === value);
+              const changes = supported.filter((item) => item.transport === value);
               const next = changes.find((item) => item.security === stack.security) ?? changes[0];
               if (next) select(next);
             }}
@@ -253,28 +311,30 @@ export function InboundForm({
           <SelectField
             label={t('catalogue.security')}
             value={stack.security}
-            options={combinations
-              .filter((item) => item.transport === stack.transport)
-              .map(({ security }) => ({
-                value: security,
-                label: security === 'tls' ? 'TLS' : 'REALITY',
-              }))}
+            options={[...new Set(selected.map((item) => item.security))].map((value) => ({
+              value,
+              label: securityLabels[value],
+            }))}
             onValueChange={(security) => {
-              const next = combinations.find(
-                (item) => item.transport === stack.transport && item.security === security,
-              );
+              const next = selected.find((item) => item.security === security);
               if (next) select(next);
             }}
           />
           <SelectField
             label={t('catalogue.listener')}
             value={stack.listener}
-            options={[
-              {
-                value: stack.listener,
-                label: t(dedicated ? 'catalogue.dedicated' : 'catalogue.sharedHttps'),
-              },
-            ]}
+            options={selected
+              .filter((item) => item.security === stack.security)
+              .map(({ listener }) => ({
+                value: listener,
+                label: listenerLabels[listener],
+              }))}
+            onValueChange={(listener) => {
+              const next = selected.find(
+                (item) => item.security === stack.security && item.listener === listener,
+              );
+              if (next) select(next);
+            }}
           />
         </>
       ) : (
@@ -288,23 +348,99 @@ export function InboundForm({
           }}
         />
       )}
-      {stack.transport !== 'raw' && (
+      {(hasHttpPath(stack.transport) || grpc) && (
         <TextField
-          label={t('catalogue.path')}
-          hint={t(dedicated ? 'catalogue.dedicatedPathHint' : 'catalogue.sharedPathHint')}
+          label={t(grpc ? 'catalogue.grpcService' : 'catalogue.path')}
+          hint={t(
+            grpc
+              ? 'catalogue.grpcServiceError'
+              : dedicated
+                ? 'catalogue.dedicatedPathHint'
+                : 'catalogue.sharedPathHint',
+          )}
           value={data.path}
           error={errors.path ?? ''}
           onChange={(e) => update({ ...data, path: e.target.value })}
         />
       )}
+      {fallback && (
+        <SelectField
+          label={t('catalogue.fallbackParent')}
+          options={ports.map(([value, inbound]) => ({ value, label: inbound.remark }))}
+          value={data.fallback_parent ?? ''}
+          error={errors.fallback_parent ?? ''}
+          onValueChange={(fallback_parent) => update({ ...data, fallback_parent })}
+        />
+      )}
       <TextField
         label={t('catalogue.port')}
         disabled={!dedicated}
-        hint={t(dedicated ? 'catalogue.independentPortHint' : 'catalogue.inheritedPortHint')}
-        value={String(dedicated ? data.port : httpsPort)}
+        hint={t(
+          dedicated
+            ? 'catalogue.independentPortHint'
+            : fallback
+              ? 'catalogue.fallbackPortHint'
+              : 'catalogue.inheritedPortHint',
+        )}
+        value={String(port)}
         error={errors.port ?? ''}
         onChange={(e) => update({ ...data, port: Number(e.target.value) })}
       />
+      {combinations?.length &&
+      data.protocol === 'vless' &&
+      stack.transport === 'raw' &&
+      stack.security === 'tls' ? (
+        <SelectField
+          label={t('catalogue.vlessEncryption')}
+          error={errors.vless_encryption ?? ''}
+          value={data.vless_encryption === undefined ? 'inherit' : String(data.vless_encryption)}
+          options={[
+            { value: 'inherit', label: t('catalogue.inherit') },
+            { value: 'false', label: t('catalogue.tlsOnly') },
+          ]}
+          onValueChange={(value) => {
+            const next = { ...data };
+            if (value === 'inherit') delete next.vless_encryption;
+            else next.vless_encryption = false;
+            update(next);
+          }}
+        />
+      ) : null}
+      {combinations?.length && data.protocol === 'vless' && stack.transport === 'xhttp' ? (
+        <SelectField
+          label={t('catalogue.xhttpMode')}
+          error={errors.xhttp_mode ?? ''}
+          value={data.xhttp_mode ?? 'inherit'}
+          options={['inherit', 'auto', 'packet-up', 'stream-up', 'stream-one'].map((value) => ({
+            value,
+            label: value === 'inherit' ? t('catalogue.inherit') : value,
+          }))}
+          onValueChange={(value) => {
+            const next = { ...data };
+            if (value === 'inherit') delete next.xhttp_mode;
+            else next.xhttp_mode = value as NonNullable<ManagedInbound['xhttp_mode']>;
+            update(next);
+          }}
+        />
+      ) : null}
+      {combinations?.length && data.protocol === 'vless' && stack.transport === 'raw' ? (
+        <SelectField
+          label={t('catalogue.vlessFlow')}
+          error={errors.flow ?? ''}
+          value={data.flow ?? 'inherit'}
+          options={[
+            { value: 'inherit', label: t('catalogue.inherit') },
+            { value: 'none', label: t('catalogue.noFlow') },
+            { value: 'vision', label: 'Vision' },
+          ]}
+          onValueChange={(value) => {
+            const next = { ...data };
+            if (value === 'inherit') delete next.flow;
+            else if (value === 'none' || value === 'vision') next.flow = value;
+            update(next);
+          }}
+        />
+      ) : null}
       <SwitchField
         label={t('catalogue.enabled')}
         description=""

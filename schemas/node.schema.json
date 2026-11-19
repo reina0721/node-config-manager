@@ -370,6 +370,22 @@
         "enabled": {
           "type": "boolean"
         },
+        "fallback_parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/VlessFlow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "listener": {
           "anyOf": [
             {
@@ -413,6 +429,22 @@
               "type": "null"
             }
           ]
+        },
+        "vless_encryption": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "xhttp_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/XhttpMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -431,7 +463,8 @@
       "type": "string",
       "enum": [
         "shared-https",
-        "dedicated"
+        "dedicated",
+        "fallback"
       ]
     },
     "Network": {
@@ -504,15 +537,28 @@
         "xhttp",
         "ws",
         "reality",
-        "vless"
+        "vless",
+        "vmess",
+        "trojan",
+        "shadowsocks",
+        "shadowsocks-2022",
+        "http",
+        "mixed",
+        "hysteria2"
       ]
     },
     "Protocol2": {
       "type": "string",
       "enum": [
         "socks5",
+        "socks5-tls",
         "https-connect",
-        "vless"
+        "vless",
+        "vmess",
+        "trojan",
+        "shadowsocks",
+        "shadowsocks-2022",
+        "hysteria2"
       ]
     },
     "Reality": {
@@ -640,6 +686,7 @@
     "Security": {
       "type": "string",
       "enum": [
+        "none",
         "tls",
         "reality"
       ]
@@ -706,7 +753,11 @@
       "enum": [
         "raw",
         "xhttp",
-        "ws"
+        "ws",
+        "hysteria",
+        "grpc",
+        "httpupgrade",
+        "mkcp"
       ]
     },
     "Upstream": {
@@ -754,6 +805,13 @@
         }
       },
       "additionalProperties": false
+    },
+    "VlessFlow": {
+      "type": "string",
+      "enum": [
+        "none",
+        "vision"
+      ]
     },
     "Warp": {
       "type": "object",
@@ -867,6 +925,15 @@
         }
       },
       "additionalProperties": false
+    },
+    "XhttpMode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "packet-up",
+        "stream-up",
+        "stream-one"
+      ]
     }
   }
 }

@@ -1,0 +1,249 @@
+use anyhow::{Context, Result};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use serde_json::{Value, json};
+use std::net::Ipv6Addr;
+
+pub(super) fn xray_config(profiles: &Value) -> Result<Value> {
+    let profiles = profiles["profiles"]
+        .as_array()
+        .context("Missing profiles")?;
+    let mut inbounds = Vec::new();
+    let mut rules = Vec::new();
+    let mut outbounds = Vec::new();
+    for (index, profile) in profiles.iter().enumerate() {
+        let port = 10808 + index;
+        let tag = format!("device-{port}");
+        let name = profile["name"].as_str().context("Missing profile name")?;
+        inbounds.push(json!({"tag":tag,"protocol":"socks","listen":"127.0.0.1","port":port,"settings":{"udp":true}}));
+        rules.push(json!({"type":"field","inboundTag":[tag],"outboundTag":name}));
+        let mut outbound = profile["outbound"].clone();
+        outbound["tag"] = json!(name);
+        outbounds.push(outbound);
+    }
+    Ok(
+        json!({"log":{"loglevel":"warning"},"inbounds":inbounds,"outbounds":outbounds,"routing":{"rules":rules}}),
+    )
+}
+
+pub(crate) struct ShareLink {
+    pub name: String,
+    pub url: String,
+}
+
+fn text(value: &Value) -> &str {
+    value.as_str().unwrap_or_default()
+}
+
+fn authority(address: &str, port: u64) -> String {
+    if address.parse::<Ipv6Addr>().is_ok() {
+        format!("[{address}]:{port}")
+    } else {
+        format!("{address}:{port}")
+    }
+}
+
+fn escape(value: &str) -> String {
+    utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+}
+
+fn profile_link(profile: &Value) -> Result<Option<ShareLink>> {
+    let name = text(&profile["name"]);
+    let outbound = &profile["outbound"];
+    let settings = &outbound["settings"];
+    let stream = &outbound["streamSettings"];
+    let transport = match text(&stream["network"]) {
+        "raw" => "tcp",
+        "mkcp" => "kcp",
+        other => other,
+    };
+    let protocol = text(&outbound["protocol"]);
+    let tls = text(&stream["security"]);
+    let security = &stream[if tls == "reality" {
+        "realitySettings"
+    } else {
+        "tlsSettings"
+    }];
+    let server = if protocol == "vless" {
+        &settings["vnext"][0]
+    } else {
+        settings
+    };
+    let address = text(&server["address"]);
+    let port = server["port"].as_u64().context("Missing share link port")?;
+    let endpoint = authority(address, port);
+    let sni = text(&security["serverName"]);
+    let origin = text(&security["fingerprint"]);
+    let config = match transport {
+        "xhttp" => &stream["xhttpSettings"],
+        "ws" => &stream["wsSettings"],
+        "grpc" => &stream["grpcSettings"],
+        "httpupgrade" => &stream["httpupgradeSettings"],
+        _ => &Value::Null,
+    };
+    let fragment = escape(name);
+    let mut query = vec![
+        ("type", transport),
+        ("security", tls),
+        ("sni", sni),
+        ("fp", origin),
+    ];
+    let path = text(&config["path"]);
+    let host = config["host"]
+        .as_str()
+        .or_else(|| config["headers"]["Host"].as_str())
+        .unwrap_or_default();
+    query.extend([
+        ("path", path),
+        ("host", host),
+        ("mode", text(&config["mode"])),
+        ("serviceName", text(&config["serviceName"])),
+    ]);
+    let url = match protocol {
+        "vless" => {
+            let user = &server["users"][0];
+            query.extend([
+                ("encryption", text(&user["encryption"])),
+                ("flow", text(&user["flow"])),
+            ]);
+            if tls == "reality" {
+                query.extend([
+                    ("pbk", text(&security["password"])),
+                    ("sid", text(&security["shortId"])),
+                ]);
+            }
+            query.retain(|(_, value)| !value.is_empty());
+            format!(
+                "vless://{}@{endpoint}?{}#{fragment}",
+                text(&user["id"]),
+                serde_urlencoded::to_string(query)?
+            )
+        }
+        "vmess" => {
+            let encoded = STANDARD.encode(serde_json::to_vec(&json!({
+                "v":"2","ps":name,"add":address,"port":port.to_string(),"id":settings["id"],
+                "aid":"0","scy":"auto","net":transport,"tls":tls,"type":"none","sni":sni,
+                "host":host,"path":if transport == "grpc" {text(&config["serviceName"])} else {path},
+                "fp":origin
+            }))?);
+            format!("vmess://{encoded}")
+        }
+        "trojan" => {
+            query.retain(|(_, value)| !value.is_empty());
+            format!(
+                "trojan://{}@{endpoint}?{}#{fragment}",
+                escape(text(&settings["password"])),
+                serde_urlencoded::to_string(query)?
+            )
+        }
+        "shadowsocks" => {
+            let secret = format!(
+                "{}:{}",
+                text(&settings["method"]),
+                text(&settings["password"])
+            );
+            format!(
+                "ss://{}@{endpoint}#{fragment}",
+                URL_SAFE_NO_PAD.encode(secret)
+            )
+        }
+        "hysteria" => format!(
+            "hysteria2://{}@{endpoint}/?{}#{fragment}",
+            escape(text(&stream["hysteriaSettings"]["auth"])),
+            serde_urlencoded::to_string([("sni", sni)])?
+        ),
+        _ => return Ok(None),
+    };
+    Ok(Some(ShareLink {
+        name: name.into(),
+        url,
+    }))
+}
+
+pub(super) fn links(profiles: &Value) -> Result<Vec<ShareLink>> {
+    profiles["profiles"]
+        .as_array()
+        .context("Missing profiles")?
+        .iter()
+        .filter_map(|profile| profile_link(profile).transpose())
+        .collect()
+}
+
+pub(super) fn native_profiles(profiles: &Value, selection: Option<&str>) -> Result<Value> {
+    let rows: Vec<_> = profiles["profiles"]
+        .as_array()
+        .context("Missing profiles")?
+        .iter()
+        .filter(|profile| profile["outbound"]["protocol"] == "hysteria")
+        .collect();
+    let id = |profile: &Value| crate::store::digest(text(&profile["name"]).as_bytes());
+    if let Some(selection) = selection {
+        let profile = rows
+            .iter()
+            .find(|profile| id(profile) == selection)
+            .context("not_found")?;
+        let outbound = &profile["outbound"];
+        let address = text(&outbound["settings"]["address"]);
+        let port = outbound["settings"]["port"]
+            .as_u64()
+            .context("Missing Hysteria port")?;
+        return Ok(json!({
+            "server":authority(address,port),
+            "auth":outbound["streamSettings"]["hysteriaSettings"]["auth"],
+            "tls":{"sni":outbound["streamSettings"]["tlsSettings"]["serverName"]},
+            "socks5":{"listen":"127.0.0.1:1080"}
+        }));
+    }
+    Ok(json!(
+        rows.iter()
+            .map(|profile| {
+                json!({"format":format!("native-hysteria/{}",id(profile)),"name":profile["name"]})
+            })
+            .collect::<Vec<_>>()
+    ))
+}
+
+pub(super) fn qr_sheet(profiles: &Value) -> Result<Vec<u8>> {
+    use qrcode::{Color, EcLevel, QrCode};
+    use std::fmt::Write;
+    let links = links(profiles)?;
+    let rows = links.len().div_ceil(2);
+    let height = rows * 560;
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="{height}" viewBox="0 0 1080 {height}"><rect width="100%" height="100%" fill="white"/>"#
+    );
+    for (index, link) in links.iter().enumerate() {
+        let code = QrCode::with_error_correction_level(link.url.as_bytes(), EcLevel::L)
+            .context("Share link does not fit into a QR code")?;
+        let width = code.width();
+        let size = 500 / (width + 8);
+        let x = (index % 2) * 540 + (540 - width * size) / 2;
+        let y = (index / 2) * 560 + 20;
+        let name = link
+            .name
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        write!(
+            svg,
+            r#"<g transform="translate({x} {y}) scale({size})"><title>{name}</title><path d=""#
+        )?;
+        for (position, color) in code.to_colors().into_iter().enumerate() {
+            if color == Color::Dark {
+                write!(svg, "M{} {}h1v1h-1z", position % width, position / width)?;
+            }
+        }
+        write!(
+            svg,
+            r#"" shape-rendering="crispEdges"/></g><text x="{}" y="{}" font-family="sans-serif" font-size="12" text-anchor="middle">{} · {name}</text>"#,
+            x + width * size / 2,
+            y + width * size + 20,
+            index + 1
+        )?;
+    }
+    svg.push_str("</svg>");
+    Ok(svg.into_bytes())
+}

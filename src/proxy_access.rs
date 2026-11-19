@@ -311,7 +311,8 @@ impl Database {
             }))
         }).collect::<Result<Vec<_>>>()?;
         Ok(
-            json!({"enabled":self.enabled, "ttl_seconds":self.ttl_seconds, "portal":portal, "users":users}),
+            json!({"enabled":self.enabled, "ttl_seconds":self.ttl_seconds, "portal":portal, "users":users,
+                "extra_profile_formats":["xray-config","links","qr","native"]}),
         )
     }
 
