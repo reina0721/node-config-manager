@@ -182,6 +182,18 @@ fn dependencies(c: &Config, reference: &Reference) -> Result<BTreeMap<String, St
     if let Some(cn) = c.cn_warp.as_ref().filter(|cn| cn.enabled) {
         files.extend([c.runtime.usque_binary.clone(), cn.config_file.clone()]);
     }
+    if crate::proxy_access::mtproto::active(c) {
+        files.push(crate::proxy_access::mtproto::BINARY.into());
+    }
+    if crate::proxy_access::amneziawg::active(c) {
+        files.push(crate::proxy_access::amneziawg::BINARY.into());
+    }
+    if crate::proxy_access::masque::active(c) {
+        files.push(crate::proxy_access::masque::BINARY.into());
+    }
+    if crate::proxy_access::tuic::active(c) {
+        files.push(crate::proxy_access::tuic::BINARY.into());
+    }
     if c.serves_web() {
         files.extend([
             "/usr/local/bin/speedtest-backend".into(),
@@ -322,7 +334,30 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
     command("id", &[&c.runtime.nginx_user])?;
     command("getent", &["group", &c.runtime.nginx_user])?;
     certificates(&c)?;
+    if crate::proxy_access::amneziawg::active(&c) {
+        crate::proxy_access::amneziawg::verify_binary()?;
+    }
+    if crate::proxy_access::masque::active(&c) {
+        crate::proxy_access::masque::verify_binary()?;
+    }
+    crate::proxy_access::tuic::check_candidate(store, &c, &s, reference)?;
+    crate::proxy_access::mtproto::check(store, &c, &s)?;
     let managed = || c.management.iter().flat_map(|m| m.active_inbounds());
+    for (inbound_id, tun) in managed().filter_map(|(id, i)| i.tun.as_ref().map(|tun| (id, tun))) {
+        use crate::catalogue::tun::Tun;
+        tun.check_namespace(inbound_id)?;
+        let temp = tempfile::Builder::new().suffix(".json").tempfile()?;
+        let credential = Tun::private_id(&s.reality_private_key, inbound_id);
+        store::atomic_write(
+            temp.path(),
+            &serde_json::to_vec(&tun.worker(inbound_id, credential))?,
+        )?;
+        command(
+            &c.runtime.xray_binary,
+            &["run", "-test", "-config", path(temp.path())?],
+        )
+        .context("tun_config_invalid")?;
+    }
     ensure!(
         !crate::catalogue::requires_access(&c) || crate::proxy_access::enabled(store)?,
         "managed_inbounds_require_proxy_access"
@@ -333,12 +368,28 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
             .iter()
             .flat_map(|m| m.active_inbounds())
             .flat_map(|(_, inbound)| {
-                [
-                    inbound.tcp_listener().then_some((inbound.port, "tcp")),
-                    inbound.udp_listener().then_some((inbound.port, "udp")),
-                ]
-                .into_iter()
-                .flatten()
+                let addresses = inbound.tunnel.as_ref().map_or_else(
+                    || {
+                        let mut addresses = vec!["0.0.0.0".parse::<std::net::IpAddr>().unwrap()];
+                        if !config.node.ipv6.is_empty() {
+                            addresses.push("::".parse().unwrap());
+                        }
+                        addresses
+                    },
+                    |tunnel| vec![tunnel.listen],
+                );
+                addresses.into_iter().flat_map(|address| {
+                    [
+                        inbound
+                            .tcp_listener()
+                            .then_some((address, inbound.port, "tcp")),
+                        inbound
+                            .udp_listener()
+                            .then_some((address, inbound.port, "udp")),
+                    ]
+                    .into_iter()
+                    .flatten()
+                })
             })
             .collect::<BTreeSet<_>>()
     };
@@ -352,19 +403,15 @@ fn preflight(store: &Store, id: &str, reference: &Reference) -> Result<(Config, 
             .as_ref()
             .map(|(config, _)| dedicated_sockets(config))
             .unwrap_or_default();
-        let addresses = ["0.0.0.0", "::"];
-        let count = if c.node.ipv6.is_empty() { 1 } else { 2 };
-        for &(port, network) in candidate_sockets.difference(&active_sockets) {
-            for address in &addresses[..count] {
-                let endpoint = (*address, port);
-                let available = match network {
-                    "tcp" => TcpListener::bind(endpoint).map(drop),
-                    _ => UdpSocket::bind(endpoint).map(drop),
-                };
-                available.with_context(|| {
-                    format!("Cannot bind managed inbound {network} port {port} on {address}")
-                })?;
-            }
+        for &(address, port, network) in candidate_sockets.difference(&active_sockets) {
+            let endpoint = (address, port);
+            let available = match network {
+                "tcp" => TcpListener::bind(endpoint).map(drop),
+                _ => UdpSocket::bind(endpoint).map(drop),
+            };
+            available.with_context(|| {
+                format!("Cannot bind managed inbound {network} port {port} on {address}")
+            })?;
         }
     }
     for route in [&c.transport.xhttp.path, &c.transport.ws.path]
@@ -561,7 +608,11 @@ pub(crate) fn probe_origin(store: &Store, id: &str) -> Result<(String, u16)> {
     store::check_private(&path, false)?;
     let checked: Receipt = serde_json::from_slice(&fs::read(path)?)?;
     ensure!(checked.release == id, "Receipt release mismatch");
-    let uri: axum::http::Uri = checked.reference.probe_url.parse()?;
+    reference_origin(&checked.reference)
+}
+
+pub(crate) fn reference_origin(reference: &Reference) -> Result<(String, u16)> {
+    let uri: axum::http::Uri = reference.probe_url.parse()?;
     let host = uri.host().context("Reference probe needs an HTTPS host")?;
     Ok((
         host.trim_matches(['[', ']']).to_owned(),
@@ -1596,8 +1647,18 @@ fn activate(
             .map(|m| m.rules.clone())
             .unwrap_or_default()
     };
+    let active = |c: &Config| {
+        c.management
+            .iter()
+            .flat_map(|m| m.active_inbounds())
+            .map(|(id, inbound)| (id, inbound.clone()))
+            .collect::<BTreeMap<_, _>>()
+    };
     let grants_changed = old_c.as_ref().is_some_and(|old| {
-        groups(old) != groups(c) || hosts(old) != hosts(c) || rules(old) != rules(c)
+        groups(old) != groups(c)
+            || hosts(old) != hosts(c)
+            || rules(old) != rules(c)
+            || active(old) != active(c)
     });
     let xray_changed = changed(store, id, old, "xray.json")?
         || changed(store, id, old, "systemd/xray.service")?
@@ -1942,6 +2003,43 @@ fn health(store: &Store, c: &Config, s: &Secrets, reference: &Reference) -> Resu
             let health_id = crate::proxy_access::health_id(store)?
                 .context("managed_inbounds_require_proxy_access")?;
             for (id, inbound) in catalogue.active_inbounds() {
+                if let Some(tun) = &inbound.tun {
+                    use catalogue::tun::Tun;
+                    retry(|| {
+                        command("systemctl", &["is-active", "--quiet", &Tun::unit(id)])?;
+                        command(
+                            "ip",
+                            &[
+                                "-n",
+                                &tun.namespace,
+                                "link",
+                                "show",
+                                "dev",
+                                &Tun::device(id),
+                            ],
+                        )?;
+                        Ok(())
+                    })
+                    .with_context(|| format!("Managed TUN {id} did not start"))?;
+                    continue;
+                }
+                if inbound.protocol == catalogue::Protocol::Mtproto {
+                    command(
+                        "ss",
+                        &["-H", "-lnt", "sport", "=", &format!(":{}", inbound.port)],
+                    )
+                    .and_then(|output| {
+                        ensure!(!output.trim().is_empty(), "MTProto listener missing");
+                        Ok(())
+                    })
+                    .with_context(|| format!("Managed MTProto {id} did not start"))?;
+                    continue;
+                }
+                if inbound.tunnel.is_some() {
+                    catalogue::tunnel::check_listen(inbound)
+                        .with_context(|| format!("Managed Tunnel {id} did not start"))?;
+                    continue;
+                }
                 let target = Target::Managed(id, inbound);
                 let endpoint = Endpoint {
                     address: "127.0.0.1".into(),
@@ -1956,7 +2054,7 @@ fn health(store: &Store, c: &Config, s: &Secrets, reference: &Reference) -> Resu
                     health_id,
                     catalogue::HEALTH_ALIAS,
                 )?;
-                check_client_outbound(reference, outbound)
+                check_managed_client(reference, outbound)
                     .with_context(|| format!("Managed inbound {id} handshake failed"))?;
             }
             for (&id, host) in &catalogue.hosts {
@@ -1983,7 +2081,7 @@ fn health(store: &Store, c: &Config, s: &Secrets, reference: &Reference) -> Resu
                         credential,
                         &catalogue::host_probe_alias(id),
                     )?;
-                    check_client_outbound(reference, outbound)
+                    check_managed_client(reference, outbound)
                         .with_context(|| format!("Managed host {id} handshake failed"))?;
                 }
             }
@@ -2046,7 +2144,35 @@ fn check_client_outbound(reference: &Reference, outbound: serde_json::Value) -> 
     check_client_outbounds(reference, vec![outbound])
 }
 
+fn check_managed_client(reference: &Reference, mut outbound: serde_json::Value) -> Result<()> {
+    use crate::proxy_access::{amneziawg, tuic};
+    if outbound["protocol"] == "amneziawg" {
+        amneziawg::verify_binary()?;
+        outbound["protocol"] = json!("wireguard");
+        return check_core_client(reference, vec![outbound], amneziawg::BINARY);
+    }
+    if outbound["protocol"] != "tuic" {
+        return check_client_outbound(reference, outbound);
+    }
+    tuic::verify_binary()?;
+    check_client_program(
+        reference,
+        tuic::BINARY,
+        |port| tuic::client(&outbound, port),
+        &["check", "-c"],
+        &["run", "-c"],
+    )
+}
+
 fn check_client_outbounds(reference: &Reference, outbounds: Vec<serde_json::Value>) -> Result<()> {
+    check_core_client(reference, outbounds, path(&reference.binary)?)
+}
+
+fn check_core_client(
+    reference: &Reference,
+    outbounds: Vec<serde_json::Value>,
+    binary: &str,
+) -> Result<()> {
     // Only the isolated fixture switches to the OS CA store for its local CA.
     #[cfg(feature = "integration-test")]
     let outbounds = {
@@ -2058,20 +2184,36 @@ fn check_client_outbounds(reference: &Reference, outbounds: Vec<serde_json::Valu
         }
         outbounds
     };
+    check_client_program(
+        reference,
+        binary,
+        |port| {
+            json!({"log":{"loglevel":"none"},"inbounds":[{"listen":"127.0.0.1","port":port,
+            "protocol":"socks","settings":{"auth":"noauth","udp":true}}],"outbounds":outbounds})
+        },
+        &["run", "-test", "-config"],
+        &["run", "-config"],
+    )
+}
+
+fn check_client_program(
+    reference: &Reference,
+    binary: &str,
+    profile: impl FnOnce(u16) -> serde_json::Value,
+    check: &[&str],
+    run: &[&str],
+) -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
-    let profile = json!({"log":{"loglevel":"none"},"inbounds":[{"listen":"127.0.0.1","port":port,
-        "protocol":"socks","settings":{"auth":"noauth","udp":true}}],"outbounds":outbounds});
     let config = tmp.path().join("client.json");
-    store::atomic_write(&config, &serde_json::to_vec(&profile)?)?;
-    command(
-        path(&reference.binary)?,
-        &["run", "-test", "-config", path(&config)?],
-    )?;
+    store::atomic_write(&config, &serde_json::to_vec(&profile(port))?)?;
+    let config = path(&config)?;
+    command(binary, &[check, &[config]].concat())?;
     drop(listener);
-    let child = Command::new(&reference.binary)
-        .args(["run", "-config", path(&config)?])
+    let child = Command::new(binary)
+        .args(run)
+        .arg(config)
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
         .stdin(Stdio::null())

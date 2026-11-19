@@ -618,7 +618,11 @@ function UserEditor({
                                 {t(
                                   profile.format.startsWith('native-wireguard/')
                                     ? 'access.downloadWireguard'
-                                    : 'access.downloadHysteria',
+                                    : profile.format.startsWith('native-tuic/')
+                                      ? 'access.downloadTuic'
+                                      : profile.format.startsWith('native-amneziawg/')
+                                        ? 'access.downloadAmneziawg'
+                                        : 'access.downloadHysteria',
                                 )}
                               </Action>
                             </div>

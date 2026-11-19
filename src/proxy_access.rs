@@ -1,9 +1,13 @@
 //! Browser leases authorize device profiles independently of release snapshots.
+pub(crate) mod amneziawg;
 mod gateway;
+pub(crate) mod masque;
 mod meter;
+pub(crate) mod mtproto;
 mod runtime;
 #[cfg(test)]
 mod tests;
+pub(crate) mod tuic;
 
 use crate::{
     admin_auth,

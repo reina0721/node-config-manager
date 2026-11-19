@@ -11,6 +11,9 @@ use std::{
 };
 use uuid::Uuid;
 
+pub(crate) mod copy;
+pub(crate) mod tun;
+pub(crate) mod tunnel;
 mod wireguard;
 mod xray_protocol;
 pub(crate) use xray_protocol::replace_accounts;
@@ -49,6 +52,12 @@ pub enum Protocol {
     Mixed,
     Hysteria2,
     Wireguard,
+    Tuic,
+    Masque,
+    Tunnel,
+    Amneziawg,
+    Mtproto,
+    Tun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -62,6 +71,12 @@ pub enum Transport {
     Httpupgrade,
     Mkcp,
     Wireguard,
+    Tuic,
+    Masque,
+    Tunnel,
+    Amneziawg,
+    Mtproto,
+    Tun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -78,6 +93,7 @@ pub enum Listener {
     SharedHttps,
     Dedicated,
     Fallback,
+    Namespace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -161,6 +177,34 @@ const WIREGUARD_STACKS: &[Stack] = &[Stack {
     security: Security::None,
     ..RAW_TLS
 }];
+const AMNEZIA_STACKS: &[Stack] = &[Stack {
+    transport: Transport::Amneziawg,
+    security: Security::None,
+    ..RAW_TLS
+}];
+const MTPROTO_STACKS: &[Stack] = &[Stack {
+    transport: Transport::Mtproto,
+    security: Security::None,
+    ..RAW_TLS
+}];
+const TUIC_STACKS: &[Stack] = &[Stack {
+    transport: Transport::Tuic,
+    ..RAW_TLS
+}];
+const MASQUE_STACKS: &[Stack] = &[Stack {
+    transport: Transport::Masque,
+    ..RAW_TLS
+}];
+const TUN_STACKS: &[Stack] = &[Stack {
+    transport: Transport::Tun,
+    security: Security::None,
+    listener: Listener::Namespace,
+}];
+const TUNNEL_STACKS: &[Stack] = &[Stack {
+    transport: Transport::Tunnel,
+    security: Security::None,
+    ..RAW_TLS
+}];
 const HYSTERIA_STACKS: &[Stack] = &[Stack {
     transport: Transport::Hysteria,
     ..RAW_TLS
@@ -174,8 +218,23 @@ pub fn inbound_capabilities() -> Value {
                 "transport":stack.transport,
                 "security":stack.security,
                 "listener":stack.listener,
-                "runtime":"xray",
-                "formats":if matches!(stack.transport, Transport::Mkcp | Transport::Wireguard) { vec!["xray"] } else { vec!["xray","mihomo"] }
+                "runtime":match protocol {
+                    Protocol::Tuic => "sing-box@1.13.13",
+                    Protocol::Masque => "xray-masque@26.10.21",
+                    Protocol::Amneziawg => "amneziawg-go@3.1.20260828",
+                    Protocol::Mtproto => "mtg-multi@1.16.1",
+                    _ => "xray",
+                },
+                "formats":match stack.transport {
+                    Transport::Tuic => vec!["mihomo","sing-box"],
+                    Transport::Wireguard => vec!["xray","wireguard"],
+                    Transport::Hysteria => vec!["xray","mihomo","hysteria2"],
+                    Transport::Mkcp | Transport::Masque => vec!["xray"],
+                    Transport::Tunnel | Transport::Tun => vec![],
+                    Transport::Amneziawg => vec!["mihomo","amneziawg"],
+                    Transport::Mtproto => vec!["telegram"],
+                    _ => vec!["xray","mihomo"],
+                }
             }))
         }).collect::<Vec<_>>()
     })
@@ -192,7 +251,12 @@ impl Stack {
     fn uses_udp_socket(self) -> bool {
         matches!(
             self.transport,
-            Transport::Hysteria | Transport::Mkcp | Transport::Wireguard
+            Transport::Hysteria
+                | Transport::Mkcp
+                | Transport::Wireguard
+                | Transport::Tuic
+                | Transport::Masque
+                | Transport::Amneziawg
         )
     }
 
@@ -205,12 +269,13 @@ impl Stack {
             Listener::Dedicated | Listener::Fallback => "reality",
             Listener::SharedHttps if self.transport == Transport::Ws => "ws",
             Listener::SharedHttps => "xhttp",
+            Listener::Namespace => unreachable!("network namespace has no public template"),
         }
     }
 }
 
 impl Protocol {
-    const MANAGED: [Self; 9] = [
+    const MANAGED: [Self; 15] = [
         Self::Vless,
         Self::Vmess,
         Self::Trojan,
@@ -220,6 +285,12 @@ impl Protocol {
         Self::Mixed,
         Self::Hysteria2,
         Self::Wireguard,
+        Self::Tuic,
+        Self::Masque,
+        Self::Tunnel,
+        Self::Amneziawg,
+        Self::Mtproto,
+        Self::Tun,
     ];
 
     fn stacks(self) -> &'static [Stack] {
@@ -231,6 +302,12 @@ impl Protocol {
             Self::Shadowsocks | Self::Shadowsocks2022 => SS_STACKS,
             Self::Hysteria2 => HYSTERIA_STACKS,
             Self::Wireguard => WIREGUARD_STACKS,
+            Self::Tuic => TUIC_STACKS,
+            Self::Masque => MASQUE_STACKS,
+            Self::Tunnel => TUNNEL_STACKS,
+            Self::Amneziawg => AMNEZIA_STACKS,
+            Self::Mtproto => MTPROTO_STACKS,
+            Self::Tun => TUN_STACKS,
             _ => &[],
         }
     }
@@ -270,6 +347,10 @@ pub struct Inbound {
     pub fallback_parent: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<tunnel::Tunnel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tun: Option<tun::Tun>,
 }
 
 impl Inbound {
@@ -293,10 +374,12 @@ impl Inbound {
     }
 
     fn supports(&self, format: Format) -> bool {
-        !matches!(
-            self.stack().transport,
-            Transport::Mkcp | Transport::Wireguard
-        ) || format == Format::Xray
+        match self.stack().transport {
+            Transport::Tuic | Transport::Amneziawg => format == Format::Mihomo,
+            Transport::Tunnel | Transport::Mtproto | Transport::Tun => false,
+            Transport::Mkcp | Transport::Wireguard | Transport::Masque => format == Format::Xray,
+            _ => true,
+        }
     }
 
     pub fn dedicated(&self) -> bool {
@@ -312,10 +395,16 @@ impl Inbound {
     }
 
     pub(crate) fn tcp_listener(&self) -> bool {
-        self.dedicated() && !self.stack().uses_udp_socket()
+        self.tunnel.as_ref().map_or_else(
+            || self.dedicated() && !self.stack().uses_udp_socket(),
+            tunnel::Tunnel::tcp,
+        )
     }
 
     pub(crate) fn udp_listener(&self) -> bool {
+        if let Some(tunnel) = &self.tunnel {
+            return tunnel.udp();
+        }
         self.stack().uses_udp_socket()
             || matches!(
                 self.protocol,
@@ -327,6 +416,7 @@ impl Inbound {
         match self.stack().listener {
             Listener::Dedicated => self.port,
             Listener::SharedHttps => c.ports.https,
+            Listener::Namespace => 0,
             Listener::Fallback => c
                 .management
                 .as_ref()
@@ -609,23 +699,7 @@ fn service_name(input: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
 }
 
-pub fn validate(c: &Config) -> Result<()> {
-    let Some(catalogue) = &c.management else {
-        return Ok(());
-    };
-    ensure!(
-        catalogue.inbounds.len() <= 32
-            && catalogue.hosts.len() <= 128
-            && catalogue.groups.len() <= 128,
-        "Management catalogue limit exceeded"
-    );
-    let reserved = [
-        "/nodes/",
-        "/librespeed/",
-        "/downloads/",
-        "/admin/",
-        "/.well-known/",
-    ];
+fn reserved_ports(c: &Config) -> BTreeSet<u16> {
     let mut ports = BTreeSet::from([
         c.ports.http,
         c.ports.https,
@@ -639,18 +713,66 @@ pub fn validate(c: &Config) -> Result<()> {
     if let Some(web) = &c.web_services {
         ports.extend([web.librespeed_port, web.openlist_port]);
     }
-    let mut paths: Vec<&str> = vec![
-        &c.transport.xhttp.path,
-        &c.transport.ws.path,
-        &c.transport.reality.path,
-    ];
+    ports
+}
+
+fn reserved_paths(c: &Config) -> impl Iterator<Item = &str> {
+    [
+        c.transport.xhttp.path.as_str(),
+        c.transport.ws.path.as_str(),
+        c.transport.reality.path.as_str(),
+        "/nodes/",
+        "/librespeed/",
+        "/downloads/",
+        "/admin/",
+        "/.well-known/",
+    ]
+    .into_iter()
+    .chain(c.website.reserved_paths.iter().map(String::as_str))
+}
+
+fn uses_path_slot(inbound: &Inbound, stack: Stack) -> bool {
+    stack.http_path()
+        && (stack.listener == Listener::SharedHttps || inbound.protocol != Protocol::Vless)
+}
+
+pub fn validate(c: &Config) -> Result<()> {
+    let Some(catalogue) = &c.management else {
+        return Ok(());
+    };
+    ensure!(
+        catalogue.inbounds.len() <= 32
+            && catalogue.hosts.len() <= 128
+            && catalogue.groups.len() <= 128,
+        "Management catalogue limit exceeded"
+    );
+    let mut ports = reserved_ports(c);
+    let mut paths: Vec<_> = reserved_paths(c).collect();
     let mut fallback_parents = BTreeSet::new();
+    let mut namespaces = BTreeSet::new();
     for (&id, inbound) in &catalogue.inbounds {
         ensure!(
             !id.is_nil() && label(&inbound.remark, 120) && !inbound.remark.trim().is_empty(),
             "invalid_inbound_remark"
         );
         let stack = inbound.checked_stack().context("invalid_inbound_stack")?;
+        ensure!(
+            (inbound.protocol == Protocol::Tunnel) == inbound.tunnel.is_some(),
+            "invalid_tunnel_endpoint"
+        );
+        ensure!(
+            (inbound.protocol == Protocol::Tun) == inbound.tun.is_some(),
+            "invalid_tun_namespace"
+        );
+        if let Some(tun) = &inbound.tun {
+            tun.validate()?;
+            ensure!(namespaces.insert(&tun.namespace), "invalid_tun_namespace");
+            ensure!(inbound.expires.is_none(), "invalid_inbound_expiry");
+        }
+        if let Some(tunnel) = &inbound.tunnel {
+            tunnel.validate()?;
+            ensure!(inbound.expires.is_none(), "invalid_inbound_expiry");
+        }
         ensure!(
             inbound
                 .expires
@@ -707,13 +829,11 @@ pub fn validate(c: &Config) -> Result<()> {
             );
             // Only shared Nginx locations compete with website and sibling paths.
             // Keep the historical validation for previously stored entries.
-            if stack.listener == Listener::SharedHttps || inbound.protocol != Protocol::Vless {
+            if uses_path_slot(inbound, stack) {
                 ensure!(
                     !paths
                         .iter()
                         .copied()
-                        .chain(reserved)
-                        .chain(c.website.reserved_paths.iter().map(String::as_str))
                         .any(|path| config::overlap(path, &inbound.path)),
                     "inbound_path_conflict"
                 );
@@ -744,6 +864,10 @@ pub fn validate(c: &Config) -> Result<()> {
         let target = catalogue
             .target(&host.inbound)
             .context("Host inbound is unavailable")?;
+        ensure!(
+            !matches!(target, Target::Managed(_, inbound) if matches!(inbound.protocol, Protocol::Tunnel | Protocol::Mtproto | Protocol::Tun)),
+            "invalid_client_host"
+        );
         ensure!(
             !host.enabled || target.enabled(),
             "An enabled host needs an enabled inbound"
@@ -791,7 +915,7 @@ pub fn validate(c: &Config) -> Result<()> {
                 && host.alpn.iter().all(|a| {
                     stack.security == Security::Tls
                         && match stack.transport {
-                            Transport::Hysteria => a == "h3",
+                            Transport::Hysteria | Transport::Tuic | Transport::Masque => a == "h3",
                             Transport::Grpc => a == "h2",
                             Transport::Ws | Transport::Httpupgrade => a == "http/1.1",
                             _ => a == "http/1.1" || a == "h2",
@@ -815,11 +939,11 @@ pub fn validate(c: &Config) -> Result<()> {
             "Invalid or duplicate group name"
         );
         ensure!(
-            group
+            group.inbounds.iter().all(|id| catalogue
                 .inbounds
-                .iter()
-                .all(|id| catalogue.inbounds.contains_key(id)),
-            "Group references an unknown inbound"
+                .get(id)
+                .is_some_and(|inbound| inbound.tunnel.is_none() && inbound.tun.is_none())),
+            "Group references an unknown or source-authorized inbound"
         );
         ensure!(
             group
@@ -958,6 +1082,17 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
         .expect("renderer inbounds");
     let mut locked = Vec::new();
     for (id, inbound) in active {
+        if let Some(tunnel) = &inbound.tunnel {
+            locked.push(tag(id));
+            inbounds.push(tunnel.inbound(id, inbound));
+            continue;
+        }
+        if matches!(
+            inbound.protocol,
+            Protocol::Tuic | Protocol::Mtproto | Protocol::Tun
+        ) {
+            continue;
+        }
         let stack = inbound.stack();
         let selected_tag = format!("vless-{}", stack.template());
         let selected_ipv6 = format!("{selected_tag}-ipv6");
@@ -991,7 +1126,9 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
                 | Transport::Grpc
                 | Transport::Httpupgrade
                 | Transport::Mkcp
-                | Transport::Wireguard => {
+                | Transport::Wireguard
+                | Transport::Masque
+                | Transport::Amneziawg => {
                     stream["network"] = json!(stack.transport);
                     stream.as_object_mut().unwrap().remove("xhttpSettings");
                     if stack.security != Security::Reality {
@@ -1018,6 +1155,9 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
                 }
                 Transport::Xhttp => stream["xhttpSettings"]["path"] = json!(inbound.path),
                 Transport::Ws => stream["wsSettings"]["path"] = json!(inbound.path),
+                Transport::Tuic | Transport::Tunnel | Transport::Mtproto | Transport::Tun => {
+                    unreachable!("separately rendered inbound")
+                }
             }
             if let Some(mode) = inbound.xhttp_mode {
                 entry["streamSettings"]["xhttpSettings"]["mode"] = json!(mode);
@@ -1048,6 +1188,9 @@ pub fn augment_xray(c: &Config, s: &Secrets, rendered: &mut Value) {
             inbounds.push(entry);
         }
     }
+    if locked.is_empty() {
+        return;
+    }
     if !rendered["routing"].is_object() {
         rendered["routing"] = json!({"rules":[]});
     }
@@ -1073,6 +1216,10 @@ fn apply_flow(user: &mut Value, flow: Option<VlessFlow>, vision: &str) {
 
 fn direct_transport(stream: &mut Value, transport: Transport, path: &str) {
     match transport {
+        Transport::Masque => {
+            stream["tlsSettings"]["alpn"] = json!(["h3"]);
+            stream["masqueSettings"] = json!({});
+        }
         Transport::Grpc => {
             stream["tlsSettings"]["alpn"] = json!(["h2"]);
             stream["grpcSettings"] = json!({"serviceName":path});
@@ -1088,7 +1235,7 @@ fn direct_transport(stream: &mut Value, transport: Transport, path: &str) {
         Transport::Mkcp => {
             stream["kcpSettings"] = json!({});
         }
-        Transport::Wireguard => {
+        Transport::Wireguard | Transport::Amneziawg => {
             stream["network"] = json!("raw");
         }
         _ => {}
@@ -1131,6 +1278,13 @@ pub fn client_outbound(
     alias: &str,
 ) -> Result<Value> {
     let stack = target.stack();
+    if let Target::Managed(id, inbound) = target
+        && inbound.protocol == Protocol::Tuic
+    {
+        return Ok(crate::proxy_access::tuic::outbound(
+            c, s, id, target, host, endpoint, user,
+        ));
+    }
     let user = match target {
         Target::Builtin(_) => user,
         Target::Managed(id, inbound) => inbound_user(id, inbound, user),
@@ -1158,7 +1312,9 @@ pub fn client_outbound(
         | Transport::Grpc
         | Transport::Httpupgrade
         | Transport::Mkcp
-        | Transport::Wireguard => {
+        | Transport::Wireguard
+        | Transport::Masque
+        | Transport::Amneziawg => {
             stream["network"] = json!(stack.transport);
             stream.as_object_mut().unwrap().remove("xhttpSettings");
             if stack.security != Security::Reality {
@@ -1185,6 +1341,9 @@ pub fn client_outbound(
         }
         Transport::Xhttp => Some("xhttpSettings"),
         Transport::Ws => Some("wsSettings"),
+        Transport::Tuic | Transport::Tunnel | Transport::Mtproto | Transport::Tun => {
+            unreachable!("no Xray client transport")
+        }
     };
     if let Some(settings) = settings {
         stream[settings]["path"] = json!(

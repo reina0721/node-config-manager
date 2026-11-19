@@ -243,7 +243,7 @@ pub fn validate(config: &Config, secrets: &Secrets) -> Result<()> {
     Ok(())
 }
 
-fn read_cidr(value: &str) -> Option<(IpAddr, u32)> {
+pub(crate) fn read_cidr(value: &str) -> Option<(IpAddr, u32)> {
     if let Some((ip, prefix)) = value.split_once('/') {
         let ip: IpAddr = ip.parse().ok()?;
         let prefix: u32 = prefix.parse().ok()?;
@@ -573,7 +573,16 @@ pub fn routing(c: &Config, ingress_tags: &[(String, String)]) -> Vec<Value> {
 pub fn needs_ingress(c: &Config) -> bool {
     c.management.as_ref().is_some_and(|m| {
         m.rules.values().any(|rule| rule.enabled)
-            || m.active_inbounds()
-                .any(|(_, inbound)| inbound.expires.is_some())
+            || m.active_inbounds().any(|(_, inbound)| {
+                inbound.expires.is_some()
+                    || matches!(
+                        inbound.protocol,
+                        crate::catalogue::Protocol::Tuic
+                            | crate::catalogue::Protocol::Masque
+                            | crate::catalogue::Protocol::Amneziawg
+                            | crate::catalogue::Protocol::Mtproto
+                            | crate::catalogue::Protocol::Tun
+                    )
+            })
     })
 }

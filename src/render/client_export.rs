@@ -61,6 +61,15 @@ fn profile_link(profile: &Value) -> Result<Option<ShareLink>> {
         other => other,
     };
     let protocol = text(&outbound["protocol"]);
+    if protocol == "mtproto" {
+        let address = escape(text(&settings["address"]));
+        let port = settings["port"].as_u64().context("Missing MTProto port")?;
+        let secret = text(&settings["secret"]);
+        return Ok(Some(ShareLink {
+            name: name.to_string(),
+            url: format!("tg://proxy?server={address}&port={port}&secret={secret}"),
+        }));
+    }
     if !matches!(
         protocol,
         "vless" | "vmess" | "trojan" | "shadowsocks" | "hysteria"
@@ -182,6 +191,8 @@ fn native_kind(outbound: &Value) -> Option<&'static str> {
     match outbound["protocol"].as_str()? {
         "hysteria" => Some("native-hysteria"),
         "wireguard" => Some("native-wireguard"),
+        "tuic" => Some("native-tuic"),
+        "amneziawg" => Some("native-amneziawg"),
         _ => None,
     }
 }
@@ -214,7 +225,12 @@ pub(super) fn native_profile(profiles: &Value, kind: &str, id: &str) -> Result<V
         .context("not_found")?;
     let outbound = &profile["outbound"];
     let settings = &outbound["settings"];
-    if kind == "native-wireguard" {
+    if kind == "native-tuic" {
+        return Ok(serde_json::to_vec_pretty(
+            &crate::proxy_access::tuic::client(outbound, 1080),
+        )?);
+    }
+    if matches!(kind, "native-wireguard" | "native-amneziawg") {
         let addresses = settings["address"]
             .as_array()
             .context("Missing WireGuard addresses")?;
@@ -227,8 +243,13 @@ pub(super) fn native_profile(profiles: &Value, kind: &str, id: &str) -> Result<V
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let parameters = if kind == "native-amneziawg" {
+            crate::proxy_access::amneziawg::PARAMETERS
+        } else {
+            ""
+        };
         return Ok(format!(
-            "[Interface]\nPrivateKey = {}\nAddress = {addresses}\nMTU = 1280\n\n[Peer]\nPublicKey = {}\nEndpoint = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n",
+            "[Interface]\nPrivateKey = {}\nAddress = {addresses}\nMTU = 1280\n{parameters}\n[Peer]\nPublicKey = {}\nEndpoint = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n",
             text(&settings["secretKey"]), text(&peer["publicKey"]), text(&peer["endpoint"]),
         ).into_bytes());
     }

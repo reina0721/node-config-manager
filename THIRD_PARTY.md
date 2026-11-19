@@ -48,6 +48,9 @@
 | --- | --- | --- |
 | LibreSpeed Go（含上游测速界面） | 1.1.6 | [LGPL-3.0 license](https://github.com/librespeed/speedtest-go/blob/v1.1.6/LICENSE), [source](https://github.com/librespeed/speedtest-go/tree/v1.1.6) |
 | OpenList | 4.2.7 | [AGPL-3.0 license](https://github.com/OpenListTeam/OpenList/blob/v4.2.7/LICENSE), [source](https://github.com/OpenListTeam/OpenList/tree/v4.2.7) |
+| sing-box（TUIC v5，可选独立进程） | 1.13.13 | [GPL-3.0 license](https://github.com/SagerNet/sing-box/blob/v1.13.13/LICENSE), [source](https://github.com/SagerNet/sing-box/tree/v1.13.13) |
+| AmneziaWG（可选 Xray 适配器） | 3.1.20260828 | [MIT license and source](https://github.com/amnezia-vpn/amneziawg-go/tree/v3.1.20260828) |
+| mtg-multi（可选 MTProto 运行时） | 1.16.1 | [MIT license and source](https://github.com/MHSanaei/mtg-multi/tree/v1.16.1) |
 | Loyalsoldier GeoIP / GeoSite | 202610172205 | [GPL-3.0 license](https://github.com/Loyalsoldier/v2ray-rules-dat/blob/202610172205/LICENSE), [source and data provenance](https://github.com/Loyalsoldier/v2ray-rules-dat/tree/202610172205) |
 
 项目自有首页只调用独立测速服务，不复制其前端实现；OpenList 保留原生界面和账号权限模型。上游许可证、版权声明和数据来源以各固定版本仓库为准。

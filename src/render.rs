@@ -219,6 +219,29 @@ fn mihomo_managed_node(name: &str, o: &Value, host: Option<&crate::catalogue::Ho
             "tls":tls,"sni":stream["tlsSettings"]["serverName"],
             "username":settings["user"],"password":settings["pass"]
         }),
+        "amneziawg" => {
+            let params = crate::proxy_access::amneziawg::PARAMETERS
+                .lines()
+                .filter_map(|entry| {
+                    let (name, value) = entry.split_once(" = ")?;
+                    Some((name.to_ascii_lowercase(), value.parse::<u32>().ok()?))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let mut node = json!({"name":name,"type":"wireguard","server":settings["server"],"port":settings["port"],
+                "ip":settings["address"][0],"ipv6":settings["address"][1],
+                "private-key":settings["secretKey"],"public-key":settings["peers"][0]["publicKey"],
+                "allowed-ips":["0.0.0.0/0","::/0"],"mtu":1280,
+                "udp":host.is_none_or(|host| host.mihomo_udp),"amnezia-wg-option":params});
+            node["amnezia-wg-option"]["version"] = json!(3);
+            if let Some(host) = host {
+                node["ip-version"] = json!(host.mihomo_ip_version);
+            }
+            return node;
+        }
+        "tuic" => json!({
+            "type":"tuic","uuid":settings["uuid"],"password":settings["password"],
+            "sni":stream["tlsSettings"]["serverName"],"alpn":["h3"],"udp-relay-mode":"native"
+        }),
         "hysteria" => json!({
             "type":"hysteria2","password":stream["hysteriaSettings"]["auth"],
             "sni":stream["tlsSettings"]["serverName"]
@@ -388,9 +411,15 @@ pub fn device_profiles(
     identity.xhttp_uuid = id.to_string();
     identity.ws_uuid = id.to_string();
     identity.reality_uuid = id.to_string();
-    let native = format
-        .split_once('/')
-        .filter(|(kind, _)| ["native-hysteria", "native-wireguard"].contains(kind));
+    let native = format.split_once('/').filter(|(kind, _)| {
+        [
+            "native-hysteria",
+            "native-wireguard",
+            "native-tuic",
+            "native-amneziawg",
+        ]
+        .contains(kind)
+    });
     if let Some((_, id)) = native {
         ensure!(
             id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -408,6 +437,26 @@ pub fn device_profiles(
                     .into_iter()
                     .map(|entry| json!({"name":entry.name,"outbound":entry.outbound})),
             );
+            if format == "native-list"
+                || native
+                    .is_some_and(|(kind, _)| matches!(kind, "native-tuic" | "native-amneziawg"))
+            {
+                profiles["profiles"].as_array_mut().unwrap().extend(
+                    crate::catalogue::client_entries(c, s, id, groups, Format::Mihomo)?
+                        .into_iter()
+                        .filter(|entry| {
+                            entry.outbound["protocol"]
+                                .as_str()
+                                .is_some_and(|p| matches!(p, "tuic" | "amneziawg"))
+                        })
+                        .map(|entry| json!({"name":entry.name,"outbound":entry.outbound})),
+                );
+            }
+            if matches!(format, "links" | "qr") {
+                profiles["profiles"].as_array_mut().unwrap().extend(
+                    crate::proxy_access::mtproto::link_profiles(c, s, id, groups),
+                );
+            }
             match format {
                 _ if let Some((kind, id)) = native => {
                     client_export::native_profile(&profiles, kind, id)

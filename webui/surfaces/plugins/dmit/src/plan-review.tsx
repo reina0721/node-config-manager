@@ -13,11 +13,13 @@ export default function PlanReview({
   onApplied,
   onBack,
   initialManualCertificates = true,
+  copy,
 }: Readonly<{
   plan: ConfigPlan;
   onApplied: () => Promise<void>;
   onBack?: () => void;
   initialManualCertificates?: boolean;
+  copy?: { node: string; onApply: () => void };
 }>) {
   const api = useNodeManagement();
   const t = useNodeText();
@@ -137,58 +139,62 @@ export default function PlanReview({
             </div>
           </Section>
           <Section
-            title={t('config.deployment')}
-            description={t('config.deploymentDescription')}
+            title={t(copy ? 'common.check' : 'config.deployment')}
+            {...(copy ? {} : { description: t('config.deploymentDescription') })}
             contentInset
           >
-            <div className="grid gap-4 md:grid-cols-2">
-              <SwitchField
-                label={t('config.manualCertificates')}
-                description=""
-                checked={manual}
-                onCheckedChange={(v) => {
-                  setManual(v);
-                  preparationChanged();
-                }}
-              />
-              <SwitchField
-                label={t('config.skipDependencies')}
-                description=""
-                checked={skip}
-                onCheckedChange={(v) => {
-                  setSkip(v);
-                  preparationChanged();
-                }}
-              />
-              <SwitchField
-                label={t('config.caTerms')}
-                description=""
-                checked={ca}
-                onCheckedChange={(v) => {
-                  setCa(v);
-                  preparationChanged();
-                }}
-              />
-              <SwitchField
-                label={t('config.warpTerms')}
-                description=""
-                checked={warp}
-                onCheckedChange={(v) => {
-                  setWarp(v);
-                  preparationChanged();
-                }}
-              />
-            </div>
-            <div className="mt-4">
-              <TextField
-                label={t('config.email')}
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  preparationChanged();
-                }}
-              />
-            </div>
+            {!copy && (
+              <>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <SwitchField
+                    label={t('config.manualCertificates')}
+                    description=""
+                    checked={manual}
+                    onCheckedChange={(v) => {
+                      setManual(v);
+                      preparationChanged();
+                    }}
+                  />
+                  <SwitchField
+                    label={t('config.skipDependencies')}
+                    description=""
+                    checked={skip}
+                    onCheckedChange={(v) => {
+                      setSkip(v);
+                      preparationChanged();
+                    }}
+                  />
+                  <SwitchField
+                    label={t('config.caTerms')}
+                    description=""
+                    checked={ca}
+                    onCheckedChange={(v) => {
+                      setCa(v);
+                      preparationChanged();
+                    }}
+                  />
+                  <SwitchField
+                    label={t('config.warpTerms')}
+                    description=""
+                    checked={warp}
+                    onCheckedChange={(v) => {
+                      setWarp(v);
+                      preparationChanged();
+                    }}
+                  />
+                </div>
+                <div className="mt-4">
+                  <TextField
+                    label={t('config.email')}
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      preparationChanged();
+                    }}
+                  />
+                </div>
+              </>
+            )}
             <div className="mt-5 flex flex-wrap gap-3">
               <Action
                 variant="secondary"
@@ -196,7 +202,7 @@ export default function PlanReview({
                 onPress={() => {
                   void run(async () => {
                     preparationChanged();
-                    const r = await api.check(plan.plan);
+                    const r = await api.check(plan.plan, copy?.node);
                     setResult(r);
                     setChecked(true);
                   }).catch(() => {});
@@ -204,26 +210,28 @@ export default function PlanReview({
               >
                 {t('common.check')}
               </Action>
-              <Action
-                variant="secondary"
-                disabled={pending || plan.restores_identity}
-                onPress={() => {
-                  void run(async () => {
-                    preparationChanged();
-                    const r = await api.prepareDeployment(plan.plan, {
-                      manual_certificates: manual,
-                      skip_dependencies: skip,
-                      accept_ca_terms: ca,
-                      accept_warp_terms: warp,
-                      ...(email ? { acme_email: email } : {}),
-                    });
-                    setResult(r);
-                    setChecked(true);
-                  }).catch(() => {});
-                }}
-              >
-                {t('config.prepareDeployment')}
-              </Action>
+              {!copy && (
+                <Action
+                  variant="secondary"
+                  disabled={pending || plan.restores_identity}
+                  onPress={() => {
+                    void run(async () => {
+                      preparationChanged();
+                      const r = await api.prepareDeployment(plan.plan, {
+                        manual_certificates: manual,
+                        skip_dependencies: skip,
+                        accept_ca_terms: ca,
+                        accept_warp_terms: warp,
+                        ...(email ? { acme_email: email } : {}),
+                      });
+                      setResult(r);
+                      setChecked(true);
+                    }).catch(() => {});
+                  }}
+                >
+                  {t('config.prepareDeployment')}
+                </Action>
+              )}
             </div>
           </Section>
           {typeof result?.deployment === 'object' ? (
@@ -276,7 +284,8 @@ export default function PlanReview({
                 tone="danger"
                 onConfirm={() =>
                   run(async () => {
-                    await api.apply(plan.plan, confirm);
+                    copy?.onApply();
+                    await api.apply(plan.plan, confirm, copy?.node);
                     await onApplied();
                   })
                 }

@@ -438,6 +438,26 @@
             }
           ]
         },
+        "tun": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Tun"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tunnel": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Tunnel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "vless_encryption": {
           "type": [
             "boolean",
@@ -472,10 +492,19 @@
       "enum": [
         "shared-https",
         "dedicated",
-        "fallback"
+        "fallback",
+        "namespace"
       ]
     },
     "Network": {
+      "type": "string",
+      "enum": [
+        "tcp",
+        "udp",
+        "both"
+      ]
+    },
+    "Network2": {
       "type": "string",
       "enum": [
         "tcp",
@@ -553,7 +582,13 @@
         "http",
         "mixed",
         "hysteria2",
-        "wireguard"
+        "wireguard",
+        "tuic",
+        "masque",
+        "tunnel",
+        "amneziawg",
+        "mtproto",
+        "tun"
       ]
     },
     "Protocol2": {
@@ -627,7 +662,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/definitions/Network"
+              "$ref": "#/definitions/Network2"
             },
             {
               "type": "null"
@@ -768,8 +803,89 @@
         "grpc",
         "httpupgrade",
         "mkcp",
-        "wireguard"
+        "wireguard",
+        "tuic",
+        "masque",
+        "tunnel",
+        "amneziawg",
+        "mtproto",
+        "tun"
       ]
+    },
+    "Tun": {
+      "type": "object",
+      "required": [
+        "destinations",
+        "gateway",
+        "interface",
+        "namespace",
+        "sources"
+      ],
+      "properties": {
+        "destinations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "gateway": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "interface": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "Tunnel": {
+      "type": "object",
+      "required": [
+        "listen",
+        "network",
+        "sources",
+        "target",
+        "target_port"
+      ],
+      "properties": {
+        "listen": {
+          "type": "string",
+          "format": "ip"
+        },
+        "network": {
+          "$ref": "#/definitions/Network"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "target": {
+          "type": "string",
+          "format": "ip"
+        },
+        "target_port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
     },
     "Upstream": {
       "type": "object",

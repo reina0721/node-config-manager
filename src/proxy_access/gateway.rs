@@ -35,12 +35,7 @@ struct Grant {
 }
 
 impl Admission {
-    fn from_database(
-        store: &Store,
-        db: &Database,
-        now: u64,
-        ingress: &[(String, Option<u64>)],
-    ) -> Self {
+    fn from_database(store: &Store, db: &Database, now: u64, ingress: &[runtime::Ingress]) -> Self {
         let mut result = Self::default();
         let mut capacity = HashMap::new();
         if db.enabled {
@@ -74,18 +69,22 @@ impl Admission {
                                     },
                                 );
                             } else {
-                                for (tag, end) in ingress {
-                                    let expires = expiry.min(end.unwrap_or(u64::MAX));
-                                    if expires <= now {
+                                for inbound in ingress {
+                                    let expires = expiry.min(inbound.expires.unwrap_or(u64::MAX));
+                                    if expires <= now
+                                        || inbound.groups.as_ref().is_some_and(|groups| {
+                                            groups.is_disjoint(&account.groups)
+                                        })
+                                    {
                                         continue;
                                     }
                                     result.transit.insert(
-                                        runtime::ingress_id(device.transit, tag),
+                                        runtime::ingress_id(device.transit, &inbound.tag),
                                         Grant {
                                             device: *profile,
                                             expires,
                                             budget,
-                                            ingress: Some(tag.clone()),
+                                            ingress: Some(inbound.tag.clone()),
                                         },
                                     );
                                 }

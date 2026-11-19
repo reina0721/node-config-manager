@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type {
   InboundCombination,
   ManagedInbound,
@@ -22,6 +23,12 @@ export const managedProtocolNames: Record<InboundCombination['protocol'], string
   mixed: 'Mixed (HTTP / SOCKS5)',
   hysteria2: 'Hysteria2',
   wireguard: 'WireGuard',
+  tuic: 'TUIC v5',
+  masque: 'MASQUE CONNECT-IP',
+  tunnel: 'Tunnel',
+  amneziawg: 'AmneziaWG',
+  mtproto: 'MTProto',
+  tun: 'TUN',
 };
 export const transportNames: Record<InboundStack['transport'], string> = {
   raw: 'Raw TCP',
@@ -32,6 +39,12 @@ export const transportNames: Record<InboundStack['transport'], string> = {
   httpupgrade: 'HTTPUpgrade',
   mkcp: 'mKCP',
   wireguard: 'WireGuard UDP',
+  tuic: 'QUIC (TUIC v5)',
+  masque: 'HTTP/3 CONNECT-IP',
+  tunnel: 'TCP / UDP',
+  amneziawg: 'AmneziaWG UDP',
+  mtproto: 'MTProto TCP',
+  tun: '虚拟网卡',
 };
 
 export function hasHttpPath(transport: InboundStack['transport']) {
@@ -95,7 +108,18 @@ export function inboundErrors(
 ) {
   const stack = inboundStack(inbound);
   const errors: Partial<
-    Record<'remark' | 'path' | 'port' | 'fallback_parent' | 'expires', string>
+    Record<
+      | 'remark'
+      | 'path'
+      | 'port'
+      | 'fallback_parent'
+      | 'expires'
+      | 'tunnel_endpoint'
+      | 'tunnel_sources'
+      | 'tun_namespace'
+      | 'tun_routes',
+      string
+    >
   > = {};
   if (
     !inbound.remark.trim() ||
@@ -110,6 +134,50 @@ export function inboundErrors(
       inbound.expires > 253_402_300_799)
   ) {
     errors.expires = 'console.expiryError';
+  }
+  if (inbound.protocol === 'tun') {
+    const tun = inbound.tun;
+    if (
+      !tun ||
+      !/^[a-z][a-z0-9_-]{0,31}$/i.test(tun.namespace) ||
+      !/^[a-z][a-z0-9_-]{0,14}$/i.test(tun.interface) ||
+      tun.interface === 'lo'
+    ) {
+      errors.tun_namespace = 'catalogue.tunNamespaceError';
+    }
+    if (!tun?.gateway.length || !tun.sources.length || !tun.destinations.length) {
+      errors.tun_routes = 'catalogue.tunRouteError';
+    }
+  }
+  if (inbound.protocol === 'tunnel') {
+    const value = inbound.tunnel;
+    const ip = z.union([z.ipv4(), z.ipv6()]);
+    if (
+      !value ||
+      !ip.safeParse(value.listen).success ||
+      !ip.safeParse(value.target).success ||
+      !Number.isInteger(value.target_port) ||
+      value.target_port < 1 ||
+      value.target_port > 65535
+    ) {
+      errors.tunnel_endpoint = 'catalogue.tunnelEndpointError';
+    }
+    if (
+      !value?.sources.length ||
+      value.sources.some((source) => {
+        const [address = '', prefix, ...extra] = source.split('/');
+        const v6 = address.includes(':');
+        return (
+          extra.length > 0 ||
+          !ip.safeParse(address).success ||
+          v6 !== value.listen.includes(':') ||
+          (prefix !== undefined &&
+            (!/^\d+$/.test(prefix) || Number(prefix) < 1 || Number(prefix) > (v6 ? 128 : 32)))
+        );
+      })
+    ) {
+      errors.tunnel_sources = 'catalogue.tunnelSourceError';
+    }
   }
   const others = Object.entries(config.management?.inbounds ?? {}).filter(
     ([other]) => other !== id,

@@ -1,0 +1,70 @@
+diff --git a/proxy/masque/server.go b/proxy/masque/server.go
+index db8660d..0e4f834 100644
+--- a/proxy/masque/server.go
++++ b/proxy/masque/server.go
+@@ -427,17 +427,10 @@ func (s *Server) readFromTunnel(t *serverTunnel) error {
+ 		if !ok || dst.IsLinkLocalUnicast() || dst.IsMulticast() {
+ 			continue
+ 		}
+-		if other := s.lookup(dst); other != nil {
+-			if other != t {
+-				packet := buf.NewWithSize(int32(n))
+-				packet.Write(b[:n])
+-				if !other.send(packet) {
+-					packet.Release()
+-				}
+-			}
+-			continue
+-		}
+-		if s.inPool(dst) && !slices.Contains(s.local, dst) {
++		// A CONNECT-IP tunnel may only send as one of its assigned addresses.
++		// Leave all peer addresses unreachable, including the server gateway.
++		src := packetSource(b[:n])
++		if !slices.Contains(t.addrs, src) || s.inPool(dst.Unmap()) {
+ 			continue
+ 		}
+ 		s.dev.Write([][]byte{b[:n]}, 0)
+@@ -482,6 +475,17 @@ func (s *Server) writeToTunnel(t *serverTunnel) {
+ 	}
+ }
+ 
++// packetSource is used only after packetDestination has checked the header.
++func packetSource(packet []byte) netip.Addr {
++	switch packet[0] >> 4 {
++	case 4:
++		return netip.AddrFrom4([4]byte(packet[12:16]))
++	case 6:
++		return netip.AddrFrom16([16]byte(packet[8:24]))
++	}
++	return netip.Addr{}
++}
++
+ func packetDestination(packet []byte) (netip.Addr, bool) {
+ 	if len(packet) == 0 {
+ 		return netip.Addr{}, false
+diff --git a/proxy/masque/server_test.go b/proxy/masque/server_test.go
+index e10b684..e04885f 100644
+--- a/proxy/masque/server_test.go
++++ b/proxy/masque/server_test.go
+@@ -181,7 +181,7 @@ func addUserTunnel(t *testing.T, s *Server, user *protocol.MemoryUser) (*serverT
+ 	return tunnel, conn
+ }
+ 
+-func TestServerRoutesTunnelPackets(t *testing.T) {
++func TestServerIsolatesTunnelPeers(t *testing.T) {
+ 	s, dev := newTestServer(t)
+ 	a, aConn := addTunnel(t, s)
+ 	b, bConn := addTunnel(t, s)
+@@ -209,9 +209,9 @@ func TestServerRoutesTunnelPackets(t *testing.T) {
+ 	aConn.Close()
+ 	require.NoError(t, s.readFromTunnel(a))
+ 
+-	require.Eventually(t, func() bool { return len(bConn.packets()) == 2 }, time.Second, time.Millisecond)
+-	require.Equal(t, [][]byte{toB, toB6}, bConn.packets())
+-	require.Equal(t, [][]byte{toServer, toInternet}, dev.packets())
++	require.Empty(t, bConn.packets())
++	require.Empty(t, b.queue)
++	require.Equal(t, [][]byte{toInternet}, dev.packets())
+ 	require.Empty(t, aConn.packets())
+ }
+ 

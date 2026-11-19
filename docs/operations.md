@@ -59,3 +59,32 @@ nodectl renew-hook
 一键向导成功后自动输出私密客户端目录，也可运行 `nodectl export-clients --format all --output /root/client-bundle`。profiles.json 是 Xray profiles，proxies.yaml 是 Mihomo 节点片段，weights.json 保留分配权重；合并节点时保留自己的规则。
 
 自动部署的 rollback/recover 同时处理配置、证书、首页、续期、DNS 和服务；需要非交互 DNS 恢复时增加 `--token-file /etc/dmit-node/credentials/cloudflare-token`，也可使用原有私密 Token 文件。完成记录绑定材料指纹，现场漂移时拒绝覆盖。先用新程序完成材料恢复，再核对摘要并恢复旧程序，不能直接降级后删除新恢复记录。
+
+## 可选协议运行时
+
+| 入口 | 运行时 | 设备下载 |
+| --- | --- | --- |
+| WireGuard | 现有锁定 Xray | Xray、WireGuard |
+| TUIC v5 | sing-box v1.13.13 | Mihomo、sing-box |
+| AmneziaWG | 使用 amneziawg-go v3.1.20260828 的独立 Xray | Mihomo、AmneziaWG |
+| MASQUE CONNECT-IP | 使用对等端隔离补丁的独立 Xray | Xray |
+| MTProto | 使用统一认证网关的 mtg-multi v1.16.1 | Telegram 链接及二维码 |
+| Tunnel | 现有锁定 Xray | 按来源 IP 及固定目标授权 |
+| TUN | 专用网络命名空间内的 Xray | 按来源及目标路由授权 |
+
+启用 TUIC 前运行 `sudo nodectl install-sing-box`。其他可选运行时可以从本版本源码构建。构建脚本核对上游提交、补丁、Go 版本及当前架构的二进制摘要。
+
+```sh
+bash scripts/build-proxy-adapter.sh xray-masque /tmp/nodectl-xray-masque
+sudo install -o root -g root -m 0755 /tmp/nodectl-xray-masque /usr/local/bin/nodectl-xray-masque
+bash scripts/build-proxy-adapter.sh xray-amneziawg /tmp/nodectl-xray-amneziawg
+sudo install -o root -g root -m 0755 /tmp/nodectl-xray-amneziawg /usr/local/bin/nodectl-xray-amneziawg
+bash scripts/build-proxy-adapter.sh mtg-multi /tmp/nodectl-mtg
+sudo install -o root -g root -m 0755 /tmp/nodectl-mtg /usr/local/bin/nodectl-mtg
+```
+
+MASQUE 的健康探测使用可经隧道转发的 HTTPS 地址。设备通过浏览器登录后可导入原生配置。所有启用的运行时和入口都参加配置检查和应用。
+
+TUN 表单使用专用命名空间及其接入网卡。管理员先准备命名空间内的接入链路，并启用所选地址族的转发。填写虚拟网卡的 IP 与前缀、允许来源和目标前缀。应用时 Xray 在该命名空间创建虚拟网卡并安装目标路由。
+
+节点复制需要来源的读取权限及目标的管理权限。预览会显示依赖与重新分配的 ID。检查并应用后，配置以禁用草稿保存。目标节点可按任务 ID 查回进度和结果。

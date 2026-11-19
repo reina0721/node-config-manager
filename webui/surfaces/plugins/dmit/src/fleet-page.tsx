@@ -7,6 +7,7 @@ import { AlertBanner, Badge } from '@community-go/ui-adapter/feedback';
 import { PasswordField, SelectField, TextField } from '@community-go/ui-adapter/form-field';
 import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import { useNodeManagement, type PeerGrant } from '../../../src/node-management';
+import FleetCopy from './fleet-copy';
 import { Code, Details, NodePage, Timestamp, useNodeQuery, useNodeText } from './common';
 
 export default function FleetPage() {
@@ -101,6 +102,14 @@ export default function FleetPage() {
               )}
             </div>
           </Section>
+          {fleet.data.peers.length > 0 && (
+            <FleetCopy
+              nodes={[
+                { value: 'local', label: fleet.data.local.hostname ?? label('local') },
+                ...fleet.data.peers.map((peer) => ({ value: peer.id, label: peer.name })),
+              ]}
+            />
+          )}
           <Section title={label('peers')}>
             <DataTable
               label={label('peers')}

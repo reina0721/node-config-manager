@@ -165,6 +165,7 @@ struct Plan {
     generation: String,
     deployment: Option<Deployment>,
     restore_secrets: Option<config::Secrets>,
+    copy_job: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -368,6 +369,11 @@ async fn handle(
                 | "invalid_inbound_port"
                 | "inbound_port_conflict"
                 | "invalid_host_path"
+                | "invalid_tunnel_endpoint"
+                | "invalid_tunnel_sources"
+                | "invalid_client_host"
+                | "invalid_tun_namespace"
+                | "invalid_tun_routes"
                 | "invalid_proxy_ttl"
                 | "invalid_proxy_username"
                 | "invalid_proxy_password"
@@ -383,6 +389,9 @@ async fn handle(
                 | "policies_require_proxy_access"
                 | "peer_scope_denied"
                 | "peer_unavailable"
+                | "copy_already_applied"
+                | "copy_capability_missing"
+                | "copy_target_validation"
                 | "proxy_user_exists"
                 | "version_switch_pending"
                 | "version_auth_incompatible"
@@ -418,6 +427,10 @@ async fn handle(
                 "invalid_vless_flow" => Some("flow"),
                 "invalid_vless_encryption" => Some("vless_encryption"),
                 "invalid_inbound_expiry" => Some("expires"),
+                "invalid_tunnel_endpoint" => Some("tunnel_endpoint"),
+                "invalid_tunnel_sources" => Some("tunnel_sources"),
+                "invalid_tun_namespace" => Some("tun_namespace"),
+                "invalid_tun_routes" => Some("tun_routes"),
                 "invalid_fallback_parent" => Some("fallback_parent"),
                 "invalid_proxy_username" | "proxy_user_exists" => Some("username"),
                 "invalid_proxy_password" => Some("password"),
@@ -477,6 +490,28 @@ fn remedy(code: &str) -> &str {
         "managed_inbounds_require_proxy_access" => "启用附加入站或主机前，请启用浏览器认证。",
         "policies_require_proxy_access" => "客户端限制需要启用浏览器认证。",
         "peer_scope_denied" => "配对授权不包含此操作。",
+        "copy_already_applied" => "此复制请求已创建目标资源，请查看目标节点的任务记录。",
+        "copy_capability_missing" => "目标节点需要支持所选资源和跨节点复制的版本。",
+        "invalid_tun_namespace" => "选择专用网络命名空间及其中唯一的接入网卡。",
+        "invalid_tun_routes" => "核对网卡前缀、允许源网段和目标网段。",
+        "tun_namespace_forwarding" => "专用命名空间缺少所选地址族的转发设置。",
+        "tun_config_invalid" => "Xray 拒绝了 TUN 候选配置。",
+        "invalid_tunnel_endpoint" => "填写明确的监听 IP、目标 IP 和目标端口。",
+        "invalid_tunnel_sources" => "填写与监听地址同族的允许源网段，不接受全网段。",
+        "invalid_client_host" => "此入口使用独立来源或原生客户端配置。",
+        "mtproto_runtime_missing" => "目标节点缺少固定版本的 MTProto 运行时。",
+        "mtproto_runtime_invalid" => "MTProto 运行时的摘要与此版本不符。",
+        "mtproto_config_invalid" => "MTProto 运行时拒绝了候选配置。",
+        "amneziawg_runtime_missing" => "目标节点缺少固定版本的 AmneziaWG 运行时。",
+        "amneziawg_runtime_invalid" => "AmneziaWG 运行时的摘要与此版本不符。",
+        "amneziawg_config_invalid" => "AmneziaWG 运行时拒绝了候选配置。",
+        "masque_runtime_missing" => "目标节点缺少固定版本的 MASQUE 运行时。",
+        "masque_runtime_invalid" => "MASQUE 运行时的摘要与此版本不符。",
+        "masque_config_invalid" => "MASQUE 运行时拒绝了候选配置。",
+        "tuic_runtime_missing" => "目标节点缺少 TUIC 运行时，请先运行 nodectl install-sing-box。",
+        "tuic_runtime_invalid" => "已安装的 sing-box 与此版本锁定的摘要不一致。",
+        "tuic_config_invalid" => "sing-box 拒绝了候选 TUIC 配置，请核对监听和证书。",
+        "copy_target_validation" => "复制草稿与目标节点配置不兼容，请检查资源限制、加密和引用。",
         "peer_unavailable" => "无法确认远端响应。请检查节点连接和任务记录后再重试。",
         "proxy_user_exists" => "用户名重复或已经存在。",
         "version_switch_pending" => "正在切换 nodectl 版本，请稍候。",
@@ -503,6 +538,13 @@ fn remedy(code: &str) -> &str {
             "检查或操作失败。原始工具输出可能含凭据，已隐藏；请检查配置依赖、证书、DNS 和恢复状态后重试。"
         }
         _ => "请求不可用，请刷新后重试。",
+    }
+}
+fn copy_peer_error(error: anyhow::Error) -> anyhow::Error {
+    if error.to_string() == "not_found" {
+        anyhow::anyhow!("copy_capability_missing")
+    } else {
+        error
     }
 }
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
@@ -647,6 +689,7 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
             }
             "overview" => read::overview(&app.store, &mut app.meter.lock().unwrap()),
             "fleet" => crate::fleet::list(&app.store)?,
+            "catalogue/copy-source" => json!(crate::catalogue::copy::source(&app.store)?),
             "panel" => crate::admin_docs::panel(&app.store)?,
             "xray" => crate::admin_docs::xray(&app.store)?,
             "openapi" => crate::admin_docs::openapi(),
@@ -761,6 +804,50 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
             app.audit(path, "success", None)?;
             result
         }
+        "fleet/copy-preview" => {
+            ensure!(!from_peer, "peer_scope_denied");
+            let input: crate::catalogue::copy::Request = decode(body)?;
+            ensure!(input.source != input.target, "bad_request");
+            let parse_peer = |value: &str| {
+                uuid::Uuid::parse_str(value).map_err(|_| anyhow::anyhow!("bad_request"))
+            };
+            let source = if input.source == "local" {
+                crate::catalogue::copy::source(&app.store)?
+            } else {
+                let value = crate::fleet::forward(
+                    &app.store,
+                    parse_peer(&input.source)?,
+                    "catalogue/copy-source",
+                    false,
+                    &[],
+                )
+                .map_err(copy_peer_error)?;
+                serde_json::from_value(value).context("copy_capability_missing")?
+            };
+            ensure!(source.base == input.source_base, "stale_plan");
+            let import = crate::catalogue::copy::Import {
+                base: input.target_base,
+                request: input.request,
+                catalogue: crate::catalogue::copy::select(&source.catalogue, &input.resources)?,
+                selected: input.resources,
+            };
+            if input.target == "local" {
+                app.copy_preview(import, owner)?
+            } else {
+                crate::fleet::forward(
+                    &app.store,
+                    parse_peer(&input.target)?,
+                    "catalogue/copy-preview",
+                    true,
+                    &serde_json::to_vec(&import)?,
+                )
+                .map_err(copy_peer_error)?
+            }
+        }
+        "catalogue/copy-preview" => {
+            let input = serde_json::from_slice(body).context("copy_capability_missing")?;
+            app.copy_preview(input, owner)?
+        }
         "config/preview" => {
             ensure!(!app.busy.load(Ordering::SeqCst), "operation_busy");
             let input: Preview = decode(body)?;
@@ -836,14 +923,20 @@ fn dispatch(app: &Arc<App>, method: &Method, uri: &Uri, h: &HeaderMap, body: &[u
                 );
                 ensure!(plan.checked, "check_required");
             }
-            let operation = if apply {
-                "config-apply"
+            let job = if apply && let Some(id) = plan.copy_job.clone() {
+                app.start_named("catalogue-copy", id, move |app, job| {
+                    app.execute_plan(plan, true, job)
+                })?
             } else {
-                "config-check"
+                let operation = if apply {
+                    "config-apply"
+                } else {
+                    "config-check"
+                };
+                app.start(operation, move |app, job| {
+                    app.execute_plan(plan, apply, job)
+                })?
             };
-            let job = app.start(operation, move |app, job| {
-                app.execute_plan(plan, apply, job)
-            })?;
             json!({"job":job})
         }
         "backups/preview" => {
@@ -1146,6 +1239,7 @@ impl App {
             generation: auth::generation(&self.store)?,
             deployment: None,
             restore_secrets,
+            copy_job: None,
         };
         let mut plans = self.plans.lock().unwrap();
         plans.retain(|_, p| p.expires >= auth::now());
@@ -1159,6 +1253,38 @@ impl App {
         Ok(
             json!({"plan":id,"release":release,"changes":changes,"diff":diff,"expires_in":600,"advanced":advanced,"restores_identity":restores_identity,"risk":if restores_identity{"恢复包含客户端身份，应用后可能需要更新客户端。管理员与订阅 Token 不参与恢复；DNS/证书不匹配时必须先处理依赖。"}else{"域名/IP 变更要求 DNS 和双证书 SAN 先满足依赖；检查不通过不会应用。"}}),
         )
+    }
+    fn copy_preview(&self, input: crate::catalogue::copy::Import, owner: String) -> Result<Value> {
+        let job_id = crate::catalogue::copy::apply_job(&owner, input.request);
+        if self.jobs.lock().unwrap().contains_key(&job_id) {
+            return Ok(json!({"job":job_id,"resources":[],"conflicts":[]}));
+        }
+        ensure!(!self.busy.load(Ordering::SeqCst), "operation_busy");
+        let _guard = self.store.lock()?;
+        ensure!(
+            input.base == policy::fingerprint(&self.store)?,
+            "stale_plan"
+        );
+        let (old, secrets) = self.store.inputs()?;
+        let port = self.origin.parse::<Uri>()?.port_u16();
+        let (candidate, mut result) =
+            crate::catalogue::copy::candidate(&old, &secrets, input, port)?;
+        if result["conflicts"]
+            .as_array()
+            .is_some_and(|issues| issues.is_empty())
+        {
+            let review = self.preview_locked(&old, secrets, candidate, owner, false, None)?;
+            let id = review["plan"].as_str().context("stale_plan")?;
+            self.plans
+                .lock()
+                .unwrap()
+                .get_mut(id)
+                .context("stale_plan")?
+                .copy_job = Some(job_id.clone());
+            result["apply_job"] = json!(job_id);
+            result["review"] = review;
+        }
+        Ok(result)
     }
     fn plan(&self, id: &str, owner: &str) -> Result<Plan> {
         let plan = self
@@ -1181,13 +1307,23 @@ impl App {
     where
         F: FnOnce(&Arc<Self>, &str) -> Result<Value> + Send + 'static,
     {
+        self.start_named(operation, auth::random(), work)
+    }
+
+    fn start_named<F>(self: &Arc<Self>, operation: &str, id: String, work: F) -> Result<String>
+    where
+        F: FnOnce(&Arc<Self>, &str) -> Result<Value> + Send + 'static,
+    {
         ensure!(
             self.busy
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok(),
             "operation_busy"
         );
-        let id = auth::random();
+        if self.jobs.lock().unwrap().contains_key(&id) {
+            self.busy.store(false, Ordering::SeqCst);
+            return Ok(id);
+        }
         if let Err(e) = self.audit(operation, "started", Some(&id)) {
             self.busy.store(false, Ordering::SeqCst);
             return Err(e);
@@ -1237,6 +1373,29 @@ impl App {
                         false,
                         json!({"error":"inbound_port_occupied","message":"系统中已有服务监听该端口，请返回入站表单更换端口。"}),
                     )
+                }
+                Ok(Err(error))
+                    if [
+                        "tuic_runtime_missing",
+                        "tuic_runtime_invalid",
+                        "tuic_config_invalid",
+                        "masque_runtime_missing",
+                        "masque_runtime_invalid",
+                        "masque_config_invalid",
+                        "amneziawg_runtime_missing",
+                        "amneziawg_runtime_invalid",
+                        "amneziawg_config_invalid",
+                        "mtproto_runtime_missing",
+                        "mtproto_runtime_invalid",
+                        "mtproto_config_invalid",
+                        "invalid_tun_namespace",
+                        "tun_namespace_forwarding",
+                        "tun_config_invalid",
+                    ]
+                    .contains(&error.to_string().as_str()) =>
+                {
+                    let code = error.to_string();
+                    (false, json!({"error":code,"message":remedy(&code)}))
                 }
                 _ => (
                     false,

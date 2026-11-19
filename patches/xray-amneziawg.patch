@@ -1,0 +1,214 @@
+diff --git a/go.mod b/go.mod
+index 312aac9..1bfebdd 100644
+--- a/go.mod
++++ b/go.mod
+@@ -3,6 +3,7 @@ module github.com/xtls/xray-core
+ go 1.27
+ 
+ require (
++	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
+ 	github.com/apernet/quic-go v0.61.1-0.20260806010916-184d081eef3e
+ 	github.com/ghodss/yaml v1.0.1-0.20220118164431-d8423dcdf344
+ 	github.com/golang/mock v1.7.0-rc.1
+diff --git a/go.sum b/go.sum
+index 289c2ce..b975457 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,3 +1,5 @@
++github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828 h1:D8d8gGvwXcTxUIsE4z6F6vjy4/VZddu95vMNtOygh1c=
++github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828/go.mod h1:YoPc6qcOZqD7TXZ1xpedD8Sx3aSKsxN05ZqEFmXDNHk=
+ github.com/andybalholm/brotli v1.2.3 h1:8H1qwOkl2LPfjf3YezB90JnCliZb6SInJ/OJkEbA5NQ=
+ github.com/andybalholm/brotli v1.2.3/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
+ github.com/apernet/quic-go v0.61.1-0.20260806010916-184d081eef3e h1:5mgtR5gwIgBKMiGI1QdXldZZ+SNor06Nbu1wCBulQBg=
+@@ -15,6 +17,7 @@ github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek
+ github.com/golang/protobuf v1.5.4/go.mod h1:lnTiLA8Wa4RWRcIUkrtSVa5nRhsEGBg48fD6rSs7xps=
+ github.com/google/btree v1.1.2 h1:xf4v41cLI2Z6FxbKm+8Bu+m8ifhj15JuZ9sa0jZCMUU=
+ github.com/google/btree v1.1.2/go.mod h1:qOPhT0dTNdNzV6Z/lhRX0YXUafgPLFUh+gZMl761Gm4=
++github.com/google/btree v1.1.3 h1:CVpQJjYgC4VbzxeGVHfvZrv1ctoYCAI8vbl07Fcxlyg=
+ github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
+ github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
+ github.com/google/gopacket v1.1.19 h1:ves8RnFZPGiFnTS0uPQStjwru6uO6h+nlr9j6fL7kF8=
+diff --git a/proxy/masque/client.go b/proxy/masque/client.go
+index 4987948..89c2d16 100644
+--- a/proxy/masque/client.go
++++ b/proxy/masque/client.go
+@@ -9,7 +9,7 @@ import (
+ 	"sync"
+ 	"time"
+ 
+-	"golang.zx2c4.com/wireguard/tun"
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ 
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+diff --git a/proxy/masque/server.go b/proxy/masque/server.go
+index db8660d..c4a8365 100644
+--- a/proxy/masque/server.go
++++ b/proxy/masque/server.go
+@@ -10,7 +10,7 @@ import (
+ 	"slices"
+ 	"sync"
+ 
+-	"golang.zx2c4.com/wireguard/tun"
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ 
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+diff --git a/proxy/masque/server_test.go b/proxy/masque/server_test.go
+index e10b684..9fdfddd 100644
+--- a/proxy/masque/server_test.go
++++ b/proxy/masque/server_test.go
+@@ -11,6 +11,7 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ 	"github.com/stretchr/testify/require"
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+@@ -18,7 +19,6 @@ import (
+ 	"github.com/xtls/xray-core/common/protocol"
+ 	"github.com/xtls/xray-core/features/routing"
+ 	"github.com/xtls/xray-core/transport"
+-	"golang.zx2c4.com/wireguard/tun"
+ )
+ 
+ type fakeTunnelConn struct {
+diff --git a/proxy/wireguard/bind.go b/proxy/wireguard/bind.go
+index ab2596d..03451f0 100644
+--- a/proxy/wireguard/bind.go
++++ b/proxy/wireguard/bind.go
+@@ -12,7 +12,7 @@ import (
+ 
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/errors"
+-	"golang.zx2c4.com/wireguard/conn"
++	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
+ )
+ 
+ type bind struct {
+diff --git a/proxy/wireguard/client.go b/proxy/wireguard/client.go
+index 506ec4e..38e9e03 100644
+--- a/proxy/wireguard/client.go
++++ b/proxy/wireguard/client.go
+@@ -10,8 +10,9 @@ import (
+ 	"sync/atomic"
+ 	"time"
+ 
+-	"golang.zx2c4.com/wireguard/tun"
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ 
++	"github.com/amnezia-vpn/amneziawg-go/v3/device"
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+ 	"github.com/xtls/xray-core/common/dice"
+@@ -28,7 +29,6 @@ import (
+ 	"github.com/xtls/xray-core/features/stats"
+ 	"github.com/xtls/xray-core/transport"
+ 	"github.com/xtls/xray-core/transport/internet"
+-	"golang.zx2c4.com/wireguard/device"
+ )
+ 
+ type Handler struct {
+@@ -179,6 +179,7 @@ func NewClient(ctx context.Context, conf *DeviceConfig) (*Handler, error) {
+ 	bind.reserved = conf.Reserved
+ 	var cfg strings.Builder
+ 	cfg.WriteString("private_key=" + conf.SecretKey + "\n")
++	cfg.WriteString(nodectlAmneziaParameters)
+ 	for _, peer := range conf.Peers {
+ 		cfg.WriteString("public_key=" + peer.PublicKey + "\n")
+ 		if peer.PreSharedKey != "" {
+diff --git a/proxy/wireguard/netstack.go b/proxy/wireguard/netstack.go
+index b2b0f4e..a66295f 100644
+--- a/proxy/wireguard/netstack.go
++++ b/proxy/wireguard/netstack.go
+@@ -23,7 +23,7 @@ import (
+ 	"github.com/xtls/xray-core/common/buf"
+ 	xnet "github.com/xtls/xray-core/common/net"
+ 	xtun "github.com/xtls/xray-core/proxy/tun"
+-	"golang.zx2c4.com/wireguard/tun"
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ 
+ 	"golang.org/x/net/dns/dnsmessage"
+ )
+diff --git a/proxy/wireguard/netstack_test.go b/proxy/wireguard/netstack_test.go
+index d64c38d..77fa2af 100644
+--- a/proxy/wireguard/netstack_test.go
++++ b/proxy/wireguard/netstack_test.go
+@@ -15,7 +15,7 @@ import (
+ 
+ 	"github.com/xtls/xray-core/common/net"
+ 	"golang.org/x/net/dns/dnsmessage"
+-	"golang.zx2c4.com/wireguard/tun"
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ )
+ 
+ type closeHandler struct{}
+diff --git a/proxy/wireguard/nodectl_amnezia.go b/proxy/wireguard/nodectl_amnezia.go
+new file mode 100644
+index 0000000..021f98f
+--- /dev/null
++++ b/proxy/wireguard/nodectl_amnezia.go
+@@ -0,0 +1,6 @@
++package wireguard
++
++import _ "embed"
++
++//go:embed nodectl_amnezia.uapi
++var nodectlAmneziaParameters string
+diff --git a/proxy/wireguard/server.go b/proxy/wireguard/server.go
+index 0e7ff86..8271027 100644
+--- a/proxy/wireguard/server.go
++++ b/proxy/wireguard/server.go
+@@ -9,6 +9,8 @@ import (
+ 	"strings"
+ 	"sync"
+ 
++	"github.com/amnezia-vpn/amneziawg-go/v3/device"
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+ 	c "github.com/xtls/xray-core/common/ctx"
+@@ -26,8 +28,6 @@ import (
+ 	"github.com/xtls/xray-core/transport/internet"
+ 	"github.com/xtls/xray-core/transport/internet/stat"
+ 	"golang.org/x/crypto/curve25519"
+-	"golang.zx2c4.com/wireguard/device"
+-	"golang.zx2c4.com/wireguard/tun"
+ )
+ 
+ type Server struct {
+@@ -295,6 +295,7 @@ func (s *Server) Start() error {
+ 	dev := device.NewDevice(s.tun, bind, logger)
+ 	var cfg strings.Builder
+ 	cfg.WriteString("private_key=" + s.conf.SecretKey + "\n")
++	cfg.WriteString(nodectlAmneziaParameters)
+ 	s.users.Range(func(key, value any) bool {
+ 		peer := value.(*protocol.MemoryUser).Account.(*MemoryAccount)
+ 		cfg.WriteString("public_key=" + hex.EncodeToString(peer.Pub[:]) + "\n")
+diff --git a/proxy/wireguard/tun_default.go b/proxy/wireguard/tun_default.go
+index edad554..7e8ed17 100644
+--- a/proxy/wireguard/tun_default.go
++++ b/proxy/wireguard/tun_default.go
+@@ -6,7 +6,7 @@ import (
+ 	"errors"
+ 	"net/netip"
+ 
+-	"golang.zx2c4.com/wireguard/tun"
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ )
+ 
+ func createKernelTun([]netip.Addr, []netip.Addr, int) (tdev tun.Device, tnet *Net, err error) {
+diff --git a/proxy/wireguard/tun_linux.go b/proxy/wireguard/tun_linux.go
+index 4b95e79..439c7db 100644
+--- a/proxy/wireguard/tun_linux.go
++++ b/proxy/wireguard/tun_linux.go
+@@ -17,7 +17,7 @@ import (
+ 	"github.com/vishvananda/netlink"
+ 	"github.com/xtls/xray-core/common/errors"
+ 	xnet "github.com/xtls/xray-core/common/net"
+-	"golang.zx2c4.com/wireguard/tun"
++	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
+ )
+ 
+ var tableIndex atomic.Uint32

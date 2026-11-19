@@ -188,6 +188,7 @@ pub fn allowed(path: &str, post: bool, scope: Scope) -> bool {
             && matches!(
                 path,
                 "catalogue/preview"
+                    | "catalogue/copy-preview"
                     | "routing/match"
                     | "outbounds/test"
                     | "operations"
@@ -200,6 +201,7 @@ pub fn allowed(path: &str, post: bool, scope: Scope) -> bool {
         matches!(
             path,
             "overview"
+                | "catalogue/copy-source"
                 | "config"
                 | "nodes"
                 | "network"

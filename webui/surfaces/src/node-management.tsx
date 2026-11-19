@@ -5,6 +5,9 @@ import type {
   ConfigurationView,
   CatalogueEdit,
   ConfigPlan,
+  CopySource,
+  CopyRequest,
+  CopyPreview,
   DnsView,
   JobResult,
   ManagedJob,
@@ -40,7 +43,7 @@ export type NodeManagementPort = Readonly<{
   dns: () => Promise<DnsView>;
   services: () => Promise<readonly ManagedService[]>;
   operations: () => Promise<OperationsView>;
-  jobDetails: (id: string) => Promise<ManagedJob>;
+  jobDetails: (id: string, node?: string) => Promise<ManagedJob>;
   versions: () => Promise<VersionsView>;
   proxyAccess: () => Promise<ProxyAccess>;
   changeProxyAccess: (input: ProxyAccessChange) => Promise<ProxyAccess>;
@@ -54,6 +57,8 @@ export type NodeManagementPort = Readonly<{
   matchRoute: (input: RoutingQuery) => Promise<RoutingMatch>;
   testUpstream: (id: string) => Promise<JobResult>;
   fleet: () => Promise<Fleet>;
+  copySource: (node: string) => Promise<CopySource>;
+  previewCopy: (input: CopyRequest) => Promise<CopyPreview>;
   registerPeer: (registration: PeerRegistration) => Promise<void>;
   grantPeer: (grant: PeerGrant) => Promise<string>;
   removePeer: (id: string, grant: boolean) => Promise<void>;
@@ -63,9 +68,9 @@ export type NodeManagementPort = Readonly<{
   xray: () => Promise<XrayView>;
   openApi: () => Promise<Record<string, unknown>>;
   restoreBackup: (backup: string, token: string) => Promise<ConfigPlan>;
-  check: (plan: string) => Promise<JobResult>;
+  check: (plan: string, node?: string) => Promise<JobResult>;
   prepareDeployment: (plan: string, options: ProvisionOptions) => Promise<JobResult>;
-  apply: (plan: string, confirm: string) => Promise<JobResult>;
+  apply: (plan: string, confirm: string, node?: string) => Promise<JobResult>;
   operate: (input: OperationInput, onAccepted?: () => void) => Promise<JobResult>;
   credentials: (zone: string, token: string) => Promise<void>;
   exportClients: (format: ClientExportFormat) => Promise<string>;

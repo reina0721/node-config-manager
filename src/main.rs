@@ -62,6 +62,8 @@ enum Action {
         #[command(subcommand)]
         action: web_services::Action,
     },
+    /// Install the pinned optional sing-box runtime used by TUIC v5.
+    InstallSingBox,
     #[command(hide = true)]
     ProxyAccess {
         #[command(subcommand)]
@@ -164,6 +166,7 @@ enum ProxyRuntime {
     Start,
     Prepare,
     Serve,
+    TunWorker { binary: PathBuf, id: uuid::Uuid },
 }
 
 fn run() -> Result<()> {
@@ -178,11 +181,13 @@ fn run() -> Result<()> {
     let store = store::Store::new(cli.config_dir, cli.state_dir)?;
     match cli.command {
         Action::Admin { action } => admin::run(store, action)?,
+        Action::InstallSingBox => proxy_access::tuic::install(&store)?,
         Action::ProxyAccess { action } => match action {
             ProxyRuntime::Check => proxy_access::launch(true)?,
             ProxyRuntime::Start => proxy_access::launch(false)?,
             ProxyRuntime::Prepare => proxy_access::prepare(&store)?,
             ProxyRuntime::Serve => proxy_access::serve(&store)?,
+            ProxyRuntime::TunWorker { binary, id } => catalogue::tun::run(&binary, id)?,
         },
         Action::Web { action } => web_services::run(&store, action)?,
         Action::CnRoute(command) => cn_route::run(command)?,

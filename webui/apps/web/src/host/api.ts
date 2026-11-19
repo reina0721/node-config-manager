@@ -11,6 +11,8 @@ import {
   versionsSchema,
   routingMatchSchema,
   fleetSchema,
+  copySourceSchema,
+  copyPreviewSchema,
   panelSchema,
   xrayViewSchema,
   planViewSchema,
@@ -99,8 +101,12 @@ export function createAdminApi(
       clearTimeout(timeout);
     }
   }
-  async function watch(path: string, body: unknown, onAccepted?: () => void): Promise<JobResult> {
-    const node = selected;
+  async function watch(
+    path: string,
+    body: unknown,
+    onAccepted?: () => void,
+    node = selected,
+  ): Promise<JobResult> {
     const task = await request(path, taskSchema, body, node);
     if (node === selected) {
       onJob({
@@ -172,6 +178,10 @@ export function createAdminApi(
       } else {
         if (format.startsWith('native-wireguard/'))
           download('nodectl-wireguard.conf', 'text/plain', content);
+        else if (format.startsWith('native-amneziawg/'))
+          download('nodectl-amneziawg.conf', 'text/plain', content);
+        else if (format.startsWith('native-tuic/'))
+          download('nodectl-tuic-sing-box.json', 'application/json', content);
         else download('nodectl-hysteria2.json', 'application/json', content);
       }
     },
@@ -183,8 +193,8 @@ export function createAdminApi(
     services: async () =>
       (await request('services', z.object({ services: z.array(serviceSchema) }))).services,
     operations: () => request('operations', operationsViewSchema),
-    jobDetails: async (id) => {
-      const job = await request('jobs/' + encodeURIComponent(id), jobSchema);
+    jobDetails: async (id, node) => {
+      const job = await request('jobs/' + encodeURIComponent(id), jobSchema, undefined, node);
       if (job.result) delete job.result.token;
       return job;
     },
@@ -197,6 +207,8 @@ export function createAdminApi(
     matchRoute: (input) => request('routing/match', routingMatchSchema, input),
     testUpstream: (id) => watch('outbounds/test', { id }),
     fleet: () => request('fleet', fleetSchema, undefined, 'local'),
+    copySource: (node) => request('catalogue/copy-source', copySourceSchema, undefined, node),
+    previewCopy: (input) => request('fleet/copy-preview', copyPreviewSchema, input, 'local'),
     panel: () => request('panel', panelSchema),
     xray: () => request('xray', xrayViewSchema),
     openApi: () => request('openapi', z.record(z.string(), z.unknown())),
@@ -212,9 +224,9 @@ export function createAdminApi(
       selected = id;
       onNode({ id, name });
     },
-    check: (plan) => watch('config/check', { plan }),
+    check: (plan, node) => watch('config/check', { plan }, undefined, node),
     prepareDeployment: (plan, options) => watch('config/deploy-preview', { plan, options }),
-    apply: (plan, confirm) => watch('config/apply', { plan, confirm }),
+    apply: (plan, confirm, node) => watch('config/apply', { plan, confirm }, undefined, node),
     operate: (input, onAccepted) => watch('operations', input, onAccepted),
     credentials: async (zone, token) => {
       await request('credentials', z.object({ saved: z.boolean() }), { zone, token });

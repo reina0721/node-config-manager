@@ -135,9 +135,11 @@ function managedRows(config: NodeConfiguration, kind: Kind): Row[] {
         detail:
           inboundLabel(value) +
           ' · ' +
-          (value.fallback_parent
-            ? (m?.inbounds?.[value.fallback_parent]?.port ?? '—')
-            : value.port || config.ports.https),
+          (value.tun
+            ? value.tun.namespace + '/' + value.tun.interface
+            : value.fallback_parent
+              ? (m?.inbounds?.[value.fallback_parent]?.port ?? '—')
+              : value.port || config.ports.https),
         enabled:
           value.enabled && (value.expires === undefined || value.expires > Date.now() / 1000),
         edit: { id, kind, value },

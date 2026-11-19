@@ -4,3 +4,6 @@
 *.jpeg binary
 *.zip binary
 *.gz binary
+
+# Preserve checksum-pinned upstream patch context bytes.
+patches/*.patch -text -whitespace

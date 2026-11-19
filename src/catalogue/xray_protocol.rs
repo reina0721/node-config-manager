@@ -17,7 +17,8 @@ impl Protocol {
             Self::Http => "http",
             Self::Mixed => "mixed",
             Self::Hysteria2 => "hysteria",
-            Self::Wireguard => "wireguard",
+            Self::Wireguard | Self::Amneziawg => "wireguard",
+            Self::Masque => "masque",
             _ => "vless",
         }
     }
@@ -50,7 +51,7 @@ pub(super) fn redactions(secrets: &Secrets, id: Uuid, protocol: Protocol) -> Vec
         return Vec::new();
     }
     let key = derive(secrets, id, Uuid::nil(), b"nodectl/locked/protocol");
-    if protocol == Protocol::Wireguard {
+    if matches!(protocol, Protocol::Wireguard | Protocol::Amneziawg) {
         vec![wireguard::key_for_redaction(secrets, id)]
     } else if protocol == Protocol::Shadowsocks2022 {
         vec![STANDARD.encode(key.as_bytes()), server_psk(secrets, id)]
@@ -68,6 +69,7 @@ fn user(protocol: Protocol, key: Uuid, alias: &str) -> Value {
             json!({"password":STANDARD.encode(key.as_bytes()), "email":alias})
         }
         Protocol::Hysteria2 => json!({"auth":key, "email":alias}),
+        Protocol::Masque => json!({"email":alias,"pass":key}),
         Protocol::Http | Protocol::Mixed => json!({"user":alias, "pass":key}),
         _ => unreachable!("VLESS uses its own settings template"),
     }
@@ -83,7 +85,7 @@ pub(super) fn configure_inbound(entry: &mut Value, inbound: &Inbound, id: Uuid, 
         entry["streamSettings"]["tlsSettings"]["alpn"] = json!(["http/1.1"]);
     }
     let placeholder = derive(secrets, id, Uuid::nil(), b"nodectl/locked/protocol");
-    if protocol == Protocol::Wireguard {
+    if matches!(protocol, Protocol::Wireguard | Protocol::Amneziawg) {
         entry["settings"] = wireguard::inbound(secrets, id, placeholder);
         return;
     }
@@ -95,6 +97,7 @@ pub(super) fn configure_inbound(entry: &mut Value, inbound: &Inbound, id: Uuid, 
         }
         Protocol::Mixed => json!({"auth":"password","udp":true}),
         Protocol::Hysteria2 => json!({"version":2}),
+        Protocol::Masque => json!({"address":["198.19.0.1/22","fd67:5f10:5caf::1/64"],"mtu":1280}),
         _ => json!({}),
     };
     settings[if protocol.needs_password_account() {
@@ -116,7 +119,7 @@ pub(crate) fn replace_accounts(
         entry["protocol"] == protocol.core_name(),
         "Unexpected managed core protocol"
     );
-    if protocol == Protocol::Wireguard {
+    if matches!(protocol, Protocol::Wireguard | Protocol::Amneziawg) {
         let (id, _) = managed.context("Missing WireGuard resource")?;
         let peers = accounts
             .into_iter()
@@ -194,11 +197,25 @@ pub(super) fn client(
             json!({"address":address,"port":port,"user":alias,"pass":key})
         }
         Protocol::Hysteria2 => json!({"address":address,"port":port,"version":2}),
-        Protocol::Wireguard => wireguard::outbound(secrets, id, device, address, port),
+        Protocol::Masque => json!({"address":address,"port":port}),
+        Protocol::Wireguard | Protocol::Amneziawg => {
+            wireguard::outbound(secrets, id, device, address, port)
+        }
         _ => unreachable!("VLESS uses its own settings template"),
     };
+    let mut settings = settings;
+    if protocol == Protocol::Amneziawg {
+        settings["server"] = json!(address);
+        settings["port"] = json!(port);
+    }
     if protocol == Protocol::Hysteria2 {
         outbound["streamSettings"]["hysteriaSettings"] = json!({"version":2,"auth":key});
+    } else if protocol == Protocol::Masque {
+        outbound["streamSettings"]["masqueSettings"] = json!({"user":alias,"pass":key});
+        outbound["streamSettings"]["tlsSettings"]
+            .as_object_mut()
+            .context("MASQUE requires TLS")?
+            .remove("fingerprint");
     } else if protocol.needs_password_account() {
         outbound["streamSettings"]["tlsSettings"]["alpn"] = json!(["http/1.1"]);
         outbound["streamSettings"]["tlsSettings"]
@@ -207,10 +224,11 @@ pub(super) fn client(
             .remove("fingerprint");
     }
     outbound["settings"] = settings;
-    outbound["protocol"] = json!(if protocol == Protocol::Mixed {
-        "socks"
-    } else {
-        protocol.core_name()
+    outbound["protocol"] = json!(match protocol {
+        Protocol::Mixed => "socks",
+        Protocol::Amneziawg => "amneziawg",
+        _ => protocol.core_name(),
     });
+
     Ok(())
 }

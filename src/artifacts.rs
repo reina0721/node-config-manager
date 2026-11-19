@@ -85,8 +85,10 @@ pub(crate) fn locked_asset(component: &str, asset: &str) -> Result<Vec<u8>> {
     if component == "geodata" {
         return Ok(bytes);
     }
-    let member = lock["archive_member"]
-        .as_str()
+    let member = lock
+        .get(format!("{asset}_archive_member"))
+        .or_else(|| lock.get("archive_member"))
+        .and_then(toml::Value::as_str)
         .context("Pinned archive member missing")?;
     let binary = command("tar", &["-xOzf", path.to_str().unwrap(), "--", member])?;
     validate_service_elf(&binary, asset)?;

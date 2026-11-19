@@ -10,9 +10,15 @@ const transportSchema = z.enum([
   'httpupgrade',
   'mkcp',
   'wireguard',
+  'tuic',
+  'masque',
+  'tunnel',
+  'amneziawg',
+  'mtproto',
+  'tun',
 ]);
 const securitySchema = z.enum(['none', 'tls', 'reality']);
-const listenerSchema = z.enum(['shared-https', 'dedicated', 'fallback']);
+const listenerSchema = z.enum(['shared-https', 'dedicated', 'fallback', 'namespace']);
 const managedProtocol = z.enum([
   'vless',
   'vmess',
@@ -23,6 +29,12 @@ const managedProtocol = z.enum([
   'mixed',
   'hysteria2',
   'wireguard',
+  'tuic',
+  'masque',
+  'tunnel',
+  'amneziawg',
+  'mtproto',
+  'tun',
 ]);
 const inboundProtocol = z.union([z.enum(['xhttp', 'ws', 'reality']), managedProtocol]);
 const inboundCapabilitiesSchema = z.object({
@@ -33,7 +45,9 @@ const inboundCapabilitiesSchema = z.object({
       security: securitySchema,
       listener: listenerSchema,
       runtime: z.string(),
-      formats: z.array(z.enum(['xray', 'mihomo'])),
+      formats: z.array(
+        z.enum(['xray', 'mihomo', 'sing-box', 'wireguard', 'hysteria2', 'amneziawg', 'telegram']),
+      ),
     }),
   ),
 });
@@ -56,6 +70,26 @@ const managedInboundSchema = z
     vless_encryption: z.boolean().optional(),
     fallback_parent: z.string().uuid().optional(),
     expires: z.number().int().optional(),
+    tunnel: z
+      .object({
+        listen: z.string(),
+        sources: z.array(z.string()),
+        target: z.string(),
+        target_port: z.number().int(),
+        network: z.enum(['tcp', 'udp', 'both']),
+      })
+      .strict()
+      .optional(),
+    tun: z
+      .object({
+        namespace: z.string(),
+        interface: z.string(),
+        gateway: z.array(z.string()),
+        sources: z.array(z.string()),
+        destinations: z.array(z.string()),
+      })
+      .strict()
+      .optional(),
     path: z.string(),
     port: z.number().int(),
     enabled: z.boolean(),
@@ -409,6 +443,53 @@ export const planViewSchema = z.object({
   ),
 });
 export type ConfigPlan = z.infer<typeof planViewSchema>;
+const copyKind = z.enum(['inbound', 'host', 'group', 'upstream', 'rule']);
+export type CopyResource = { kind: z.infer<typeof copyKind>; id: string };
+export type CopyRequest = {
+  source: string;
+  target: string;
+  source_base: string;
+  target_base: string;
+  request: string;
+  resources: CopyResource[];
+};
+const copyRemarks = z.record(z.string(), z.object({ remark: z.string() }));
+const copyNames = z.record(z.string(), z.object({ name: z.string() }));
+export const copySourceSchema = z.object({
+  base: z.string(),
+  catalogue: z.object({
+    inbounds: copyRemarks.optional(),
+    hosts: copyRemarks.optional(),
+    groups: copyNames.optional(),
+    upstreams: copyNames.optional(),
+    rules: copyNames.optional(),
+  }),
+});
+export type CopySource = z.infer<typeof copySourceSchema>;
+export const copyPreviewSchema = z.object({
+  resources: z.array(
+    z.object({
+      kind: copyKind,
+      source: z.string(),
+      target: z.string(),
+      name: z.string(),
+      dependency: z.boolean(),
+    }),
+  ),
+  conflicts: z.array(
+    z.object({
+      code: z.string(),
+      kind: copyKind.optional(),
+      source: z.string().optional(),
+      field: z.string().optional(),
+      value: z.union([z.string(), z.number()]).optional(),
+    }),
+  ),
+  review: planViewSchema.optional(),
+  apply_job: z.string().optional(),
+  job: z.string().optional(),
+});
+export type CopyPreview = z.infer<typeof copyPreviewSchema>;
 export const deploymentViewSchema = z.object({
   configuration_diff: z.string(),
   required_actions: z.array(z.string()),
@@ -505,7 +586,7 @@ export const proxyUsersSchema = z.array(
 export const nativeProfileSchema = z.object({
   name: z.string(),
   format: z.templateLiteral([
-    z.enum(['native-hysteria/', 'native-wireguard/']),
+    z.enum(['native-hysteria/', 'native-wireguard/', 'native-tuic/', 'native-amneziawg/']),
     z.string().regex(/^[a-f0-9]{64}$/),
   ]),
 });

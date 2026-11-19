@@ -1,0 +1,213 @@
+diff --git a/mtglib/nodectl_relay.go b/mtglib/nodectl_relay.go
+new file mode 100644
+index 0000000..3c4ec5f
+--- /dev/null
++++ b/mtglib/nodectl_relay.go
+@@ -0,0 +1,120 @@
++package mtglib
++
++import (
++	"context"
++	"crypto/sha256"
++	"crypto/subtle"
++	"crypto/tls"
++	"encoding/base64"
++	"encoding/binary"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"io"
++	"net"
++	"net/netip"
++	"os"
++	"strconv"
++	"strings"
++	"sync"
++	"time"
++
++	"github.com/mhsanaei/mtg-multi/essentials"
++)
++
++type nodectlRelay struct {
++	Pin     string            `json:"spki"`
++	Devices map[string]string `json:"devices"`
++}
++
++// The only caller supplies a DC selected by the upstream static Telegram
++// catalogue. No fronting, middle proxy or dynamic DC list may reach this dialer.
++func dialNodectlRelay(ctx context.Context, name, address string) (essentials.Conn, error) {
++	var config nodectlRelay
++	raw, err := os.ReadFile(os.Getenv("NODECTL_MTG_RELAY"))
++	if err != nil {
++		return nil, errors.New("missing nodectl gateway configuration")
++	}
++	if err := json.Unmarshal(raw, &config); err != nil {
++		return nil, errors.New("invalid nodectl gateway configuration")
++	}
++	identity, err := hex.DecodeString(strings.ReplaceAll(config.Devices[name], "-", ""))
++	if err != nil || len(identity) != 16 {
++		return nil, errors.New("unassigned device")
++	}
++	pin, err := base64.StdEncoding.DecodeString(config.Pin)
++	if err != nil || len(pin) != sha256.Size {
++		return nil, errors.New("invalid nodectl gateway certificate pin")
++	}
++	host, rawPort, err := net.SplitHostPort(address)
++	if err != nil {
++		return nil, errors.New("invalid Telegram destination")
++	}
++	ip, err := netip.ParseAddr(host)
++	port, portErr := strconv.ParseUint(rawPort, 10, 16)
++	if err != nil || portErr != nil || port == 0 || !ip.IsGlobalUnicast() || ip.IsPrivate() {
++		return nil, errors.New("invalid Telegram destination")
++	}
++	record := append([]byte{0}, identity...)
++	record = append(record, 0, 1)
++	record = binary.BigEndian.AppendUint16(record, uint16(port))
++	ip = ip.Unmap()
++	if ip.Is4() {
++		record = append(record, 1)
++	} else {
++		record = append(record, 3)
++	}
++	record = append(record, ip.AsSlice()...)
++
++	tlsDialer := tls.Dialer{
++		NetDialer: &net.Dialer{Timeout: 8 * time.Second},
++		Config: &tls.Config{
++			MinVersion:         tls.VersionTLS13,
++			InsecureSkipVerify: true, // Replaced with a check of the pinned relay SPKI.
++			VerifyConnection: func(state tls.ConnectionState) error {
++				if len(state.PeerCertificates) != 0 {
++					sum := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
++					if subtle.ConstantTimeCompare(sum[:], pin) == 1 {
++						return nil
++					}
++				}
++				return errors.New("nodectl gateway certificate mismatch")
++			},
++		},
++	}
++	stream, err := tlsDialer.DialContext(ctx, "tcp", "127.0.0.1:19081")
++	if err != nil {
++		return nil, err
++	}
++	if _, err := stream.Write(record); err != nil {
++		_ = stream.Close()
++		return nil, err
++	}
++	return essentials.WrapNetConn(&nodectlStream{Conn: stream}), nil
++}
++
++type nodectlStream struct {
++	net.Conn
++	once sync.Once
++	err  error
++}
++
++func (stream *nodectlStream) Read(payload []byte) (int, error) {
++	stream.once.Do(func() {
++		var prefix [2]byte
++		if _, stream.err = io.ReadFull(stream.Conn, prefix[:]); stream.err != nil {
++			return
++		}
++		if prefix[0] != 0 {
++			stream.err = errors.New("invalid nodectl gateway response")
++			return
++		}
++		if prefix[1] != 0 {
++			_, stream.err = io.CopyN(io.Discard, stream.Conn, int64(prefix[1]))
++		}
++	})
++	if stream.err != nil {
++		return 0, stream.err
++	}
++	return stream.Conn.Read(payload)
++}
+diff --git a/mtglib/proxy.go b/mtglib/proxy.go
+index 12daeac..322236c 100644
+--- a/mtglib/proxy.go
++++ b/mtglib/proxy.go
+@@ -699,18 +699,6 @@ func (p *Proxy) wrapTraffic(conn essentials.Conn, ctx *streamContext) essentials
+ }
+ 
+ func (p *Proxy) doTelegramCall(ctx *streamContext) error {
+-	// When this stream carries an advertising tag, route it through a Telegram
+-	// middle proxy so a sponsored channel appears. On any failure we log and
+-	// fall through to the direct path so the client stays online (availability
+-	// is favored over the sponsored channel).
+-	if ctx.adTag != nil && p.middleProxy != nil {
+-		if err := p.doMiddleProxyCall(ctx); err != nil {
+-			ctx.logger.WarningError("cannot route through middle proxy, using direct connection", err)
+-		} else {
+-			return nil
+-		}
+-	}
+-
+ 	dcid := ctx.dc
+ 
+ 	// Media DCs come with a negative id. Addresses are kept per absolute DC
+@@ -721,15 +709,6 @@ func (p *Proxy) doTelegramCall(ctx *streamContext) error {
+ 	}
+ 
+ 	addresses := p.telegram.GetAddresses(lookupDC)
+-	if len(addresses) == 0 && p.allowFallbackOnUnknownDC {
+-		ctx.logger = ctx.logger.BindInt("original_dc", dcid)
+-		ctx.logger.Warning("unknown DC, fallbacks")
+-		ctx.dc = dc.DefaultDC
+-		if dcid < 0 {
+-			ctx.dc = -dc.DefaultDC
+-		}
+-		addresses = p.telegram.GetAddresses(dc.DefaultDC)
+-	}
+ 
+ 	var (
+ 		conn      essentials.Conn
+@@ -738,7 +717,7 @@ func (p *Proxy) doTelegramCall(ctx *streamContext) error {
+ 	)
+ 
+ 	for _, addr := range addresses {
+-		conn, err = p.network.Dial(addr.Network, addr.Address)
++		conn, err = dialNodectlRelay(ctx, ctx.secretName, addr.Address)
+ 		if err == nil {
+ 			foundAddr = addr
+ 			break
+@@ -803,37 +782,8 @@ func (p *Proxy) doMiddleProxyCall(ctx *streamContext) error {
+ 	return nil
+ }
+ 
+-func (p *Proxy) doDomainFrontingForHost(ctx *streamContext, conn *connRewind, host string) {
+-	// The handshake is over: a fronted connection must not hold a pending slot.
++func (p *Proxy) doDomainFrontingForHost(ctx *streamContext, _ *connRewind, _ string) {
+ 	ctx.finishPendingHandshake()
+-
+-	p.eventStream.Send(p.ctx, NewEventDomainFronting(ctx.streamID))
+-	conn.Rewind()
+-
+-	nativeDialer := p.network.NativeDialer()
+-	fConn, err := nativeDialer.DialContext(ctx, "tcp", p.domainFrontingAddressForHost(host))
+-	if err != nil {
+-		p.logger.WarningError("cannot dial to the fronting domain", err)
+-
+-		return
+-	}
+-
+-	frontConn := essentials.WrapNetConn(fConn)
+-
+-	if p.domainFrontingProxyProtocol {
+-		frontConn = newConnProxyProtocol(ctx.clientConn, frontConn)
+-	}
+-
+-	frontConn = p.wrapTraffic(frontConn, ctx)
+-
+-	tracker := newIdleTracker(p.idleTimeout)
+-
+-	relay.Relay(
+-		ctx,
+-		ctx.logger.Named("domain-fronting"),
+-		connIdleTimeout{Conn: frontConn, tracker: tracker},
+-		connIdleTimeout{Conn: conn, tracker: tracker},
+-	)
+ }
+ 
+ // NewProxy makes a new proxy instance.

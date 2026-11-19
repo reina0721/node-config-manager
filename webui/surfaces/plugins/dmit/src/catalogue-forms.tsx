@@ -78,10 +78,9 @@ export function HostForm({
   );
   const inbounds = [
     ...Object.entries(protocols).map(([value, label]) => ({ value, label })),
-    ...Object.entries(config.management?.inbounds ?? {}).map(([value, inbound]) => ({
-      value,
-      label: inbound.remark,
-    })),
+    ...Object.entries(config.management?.inbounds ?? {})
+      .filter(([, inbound]) => !['tunnel', 'mtproto', 'tun'].includes(inbound.protocol))
+      .map(([value, inbound]) => ({ value, label: inbound.remark })),
   ];
   return (
     <TabsView
@@ -221,6 +220,12 @@ export function InboundForm({
     data.expires ? new Date(data.expires * 1000).toISOString() : '',
   );
 
+  const [sourceText, setSourceText] = useState(data.tunnel?.sources.join(', ') ?? '');
+  const [tunText, setTunText] = useState({
+    gateway: data.tun?.gateway.join(', ') ?? '',
+    sources: data.tun?.sources.join(', ') ?? '',
+    destinations: data.tun?.destinations.join(', ') ?? '',
+  });
   const stack = inboundStack(data);
   const grpc = stack.transport === 'grpc';
   const dedicated = stack.listener === 'dedicated';
@@ -236,24 +241,59 @@ export function InboundForm({
     dedicated: t(
       stack.transport === 'hysteria' ||
         stack.transport === 'mkcp' ||
-        stack.transport === 'wireguard'
+        stack.transport === 'wireguard' ||
+        stack.transport === 'tuic' ||
+        stack.transport === 'masque' ||
+        stack.transport === 'amneziawg'
         ? 'catalogue.dedicatedUdp'
         : 'catalogue.dedicated',
     ),
     fallback: t('catalogue.samePortFallback'),
+    namespace: t('catalogue.tunNamespace'),
   };
   const protocol = managedProtocol(data.protocol);
   const supported = combinations?.filter((item) => item.protocol === protocol) ?? [];
   const selected = supported.filter((item) => item.transport === stack.transport);
   const securityLabels = {
-    none: t('catalogue.noTransportSecurity'),
+    none: t(
+      stack.transport === 'tun' || stack.transport === 'tunnel'
+        ? 'catalogue.sourceAccess'
+        : 'catalogue.noTransportSecurity',
+    ),
     tls: 'TLS',
     reality: 'REALITY',
   };
   const select = (selection: InboundCombination) => {
-    const { xhttp_mode, flow, vless_encryption, fallback_parent, ...common } = data;
+    const { xhttp_mode, flow, vless_encryption, fallback_parent, expires, tunnel, tun, ...common } =
+      data;
+    if (selection.protocol !== 'tunnel') setSourceText('');
+    if (selection.protocol !== 'tun') setTunText({ gateway: '', sources: '', destinations: '' });
     update({
       ...common,
+      ...(selection.protocol === 'tun'
+        ? {
+            tun: tun ?? {
+              namespace: '',
+              interface: '',
+              gateway: [],
+              sources: [],
+              destinations: [],
+            },
+          }
+        : {}),
+      ...(selection.protocol === 'tunnel'
+        ? {
+            tunnel: tunnel ?? {
+              listen: '',
+              sources: [],
+              target: '',
+              target_port: 0,
+              network: 'both',
+            },
+          }
+        : expires !== undefined && selection.protocol !== 'tun'
+          ? { expires }
+          : {}),
       ...(selection.protocol === 'vless' &&
       selection.transport === 'raw' &&
       selection.security === 'tls' &&
@@ -378,20 +418,22 @@ export function InboundForm({
           onValueChange={(fallback_parent) => update({ ...data, fallback_parent })}
         />
       )}
-      <TextField
-        label={t('catalogue.port')}
-        disabled={!dedicated}
-        hint={t(
-          dedicated
-            ? 'catalogue.independentPortHint'
-            : fallback
-              ? 'catalogue.fallbackPortHint'
-              : 'catalogue.inheritedPortHint',
-        )}
-        value={String(port)}
-        error={errors.port ?? ''}
-        onChange={(e) => update({ ...data, port: Number(e.target.value) })}
-      />
+      {stack.listener !== 'namespace' && (
+        <TextField
+          label={t('catalogue.port')}
+          disabled={!dedicated}
+          hint={t(
+            dedicated
+              ? 'catalogue.independentPortHint'
+              : fallback
+                ? 'catalogue.fallbackPortHint'
+                : 'catalogue.inheritedPortHint',
+          )}
+          value={String(port)}
+          error={errors.port ?? ''}
+          onChange={(e) => update({ ...data, port: Number(e.target.value) })}
+        />
+      )}
       {combinations?.length &&
       data.protocol === 'vless' &&
       stack.transport === 'raw' &&
@@ -447,23 +489,115 @@ export function InboundForm({
           }}
         />
       ) : null}
-      <TextField
-        label={t('catalogue.inboundExpiry')}
-        hint={t('access.accountExpiryHint')}
-        value={expiry}
-        error={errors.expires ?? ''}
-        onChange={(e) => {
-          const value = e.target.value;
-          setExpiry(value);
-          const next = { ...data };
-          if (!value.trim()) delete next.expires;
-          else {
-            const parsed = /Z$/i.test(value) ? Date.parse(value) : NaN;
-            next.expires = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
-          }
-          update(next);
-        }}
-      />
+      {data.tun ? (
+        <div className="grid gap-4">
+          <TextField
+            label={t('catalogue.tunNamespace')}
+            value={data.tun.namespace}
+            error={errors.tun_namespace ?? ''}
+            onChange={(event) => {
+              if (data.tun)
+                update({ ...data, tun: { ...data.tun, namespace: event.target.value.trim() } });
+            }}
+          />
+          <TextField
+            label={t('catalogue.tunInterface')}
+            value={data.tun.interface}
+            onChange={(event) => {
+              if (data.tun)
+                update({ ...data, tun: { ...data.tun, interface: event.target.value.trim() } });
+            }}
+          />
+          {(['gateway', 'sources', 'destinations'] as const).map((field) => (
+            <TextField
+              key={field}
+              label={t('catalogue.tun.' + field)}
+              value={tunText[field]}
+              error={field === 'destinations' ? (errors.tun_routes ?? '') : ''}
+              onChange={(event) => {
+                const value = event.target.value;
+                setTunText({ ...tunText, [field]: value });
+                if (data.tun) update({ ...data, tun: { ...data.tun, [field]: split(value) } });
+              }}
+            />
+          ))}
+        </div>
+      ) : data.tunnel ? (
+        <div className="grid gap-4">
+          <p className="text-sm text-muted">{t('catalogue.tunnelHint')}</p>
+          <TextField
+            label={t('catalogue.tunnelListen')}
+            value={data.tunnel.listen}
+            error={errors.tunnel_endpoint ?? ''}
+            onChange={(event) => {
+              if (data.tunnel)
+                update({ ...data, tunnel: { ...data.tunnel, listen: event.target.value.trim() } });
+            }}
+          />
+          <TextField
+            label={t('catalogue.tunnelSources')}
+            value={sourceText}
+            error={errors.tunnel_sources ?? ''}
+            onChange={(event) => {
+              const value = event.target.value;
+              setSourceText(value);
+              if (data.tunnel)
+                update({ ...data, tunnel: { ...data.tunnel, sources: split(value) } });
+            }}
+          />
+          <TextField
+            label={t('catalogue.tunnelTarget')}
+            value={data.tunnel.target}
+            onChange={(event) => {
+              if (data.tunnel)
+                update({ ...data, tunnel: { ...data.tunnel, target: event.target.value.trim() } });
+            }}
+          />
+          <TextField
+            label={t('catalogue.tunnelTargetPort')}
+            value={data.tunnel.target_port === 0 ? '' : String(data.tunnel.target_port)}
+            onChange={(event) => {
+              if (data.tunnel)
+                update({
+                  ...data,
+                  tunnel: { ...data.tunnel, target_port: Number(event.target.value) || 0 },
+                });
+            }}
+          />
+          <SelectField
+            label={t('catalogue.tunnelNetwork')}
+            value={data.tunnel.network}
+            options={[
+              { value: 'both', label: 'TCP + UDP' },
+              { value: 'tcp', label: 'TCP' },
+              { value: 'udp', label: 'UDP' },
+            ]}
+            onValueChange={(value) => {
+              if (data.tunnel && (value === 'both' || value === 'tcp' || value === 'udp')) {
+                update({ ...data, tunnel: { ...data.tunnel, network: value } });
+              }
+            }}
+          />
+        </div>
+      ) : (
+        <TextField
+          label={t('catalogue.inboundExpiry')}
+          hint={t('access.accountExpiryHint')}
+          value={expiry}
+          error={errors.expires ?? ''}
+          onChange={(e) => {
+            const value = e.target.value;
+            setExpiry(value);
+            const next = { ...data };
+            if (!value.trim()) delete next.expires;
+            else {
+              const parsed = /Z$/i.test(value) ? Date.parse(value) : NaN;
+              next.expires = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+            }
+            update(next);
+          }}
+        />
+      )}
       <SwitchField
         label={t('catalogue.enabled')}
         description=""
@@ -506,8 +640,13 @@ export function GroupForm({
       {(['inbounds', 'hosts'] as const).map((resource) => (
         <div key={resource}>
           <h3 className="font-semibold">{t('nav.' + resource)}</h3>
-          {Object.entries<{ remark: string }>(config.management?.[resource] ?? {}).map(
-            ([id, entry]) => (
+          {Object.entries<{ remark: string }>(config.management?.[resource] ?? {})
+            .filter(
+              ([id]) =>
+                resource !== 'inbounds' ||
+                !['tunnel', 'tun'].includes(config.management?.inbounds?.[id]?.protocol ?? ''),
+            )
+            .map(([id, entry]) => (
               <SwitchField
                 key={id}
                 label={entry.remark}
@@ -518,8 +657,7 @@ export function GroupForm({
                   update({ ...data, [resource]: toggle(data[resource], id, checked) })
                 }
               />
-            ),
-          )}
+            ))}
         </div>
       ))}
     </div>

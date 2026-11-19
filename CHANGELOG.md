@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0
+
+- 补齐 WireGuard、TUIC v5、AmneziaWG、MASQUE、MTProto、Tunnel 和 TUN 入口。
+- 新增跨节点资源复制、入站到期、流量周期重置、出站链路和轮询组。
+
 ## 0.7.4
 
 - 认证页支持 Mihomo 发出的 HEAD 健康检查。配置了浏览器认证的按比例分流组可在设备登录前检查三个入口的连通性。

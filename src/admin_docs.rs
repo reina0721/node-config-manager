@@ -125,6 +125,10 @@ pub fn openapi() -> Value {
         ("/proxy-access", "Account, device and traffic status"),
         ("/proxy-access/export", "Export usernames and device limits"),
         ("/fleet", "Registered peers and granted scopes"),
+        (
+            "/catalogue/copy-source",
+            "Read the resource definitions and revision available for copying",
+        ),
         ("/panel", "Administration and authorization settings"),
         ("/xray", "Redacted active Xray snapshot"),
         ("/openapi", "This OpenAPI definition"),
@@ -146,6 +150,20 @@ pub fn openapi() -> Value {
                 "id":{"type":["string","null"],"format":"uuid"},
                 "kind":{"enum":["host","inbound","group","upstream","rule"]},"value":{"type":["object","null"]},
                 "credential":{"type":"object","writeOnly":true},"clear_credential":{"type":"boolean"}
+            }}),
+            false,
+        ),
+        (
+            "/fleet/copy-preview",
+            "Preview copying resource definitions into disabled drafts on the target",
+            json!({"type":"object","required":["source","target","source_base","target_base","request","resources"],"properties":{
+                "source":{"type":"string","description":"Local node or registered peer ID"},
+                "target":{"type":"string","description":"Local node or registered peer ID"},
+                "source_base":{"type":"string"},"target_base":{"type":"string"},
+                "request":{"type":"string","format":"uuid","description":"Stable transfer identifier"},
+                "resources":{"type":"array","items":{"type":"object","required":["kind","id"],"properties":{
+                    "kind":{"enum":["inbound","host","group","upstream","rule"]},"id":{"type":"string","format":"uuid"}
+                }}}
             }}),
             false,
         ),

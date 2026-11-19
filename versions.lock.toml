@@ -71,3 +71,46 @@ linux_arm64_url = "https://github.com/OpenListTeam/OpenList/releases/download/v4
 linux_arm64_archive_sha256 = "119e583bacc92339017364eb67029c2c506df334f4c78a1b3c1f89230f3db35f"
 linux_arm64_binary_sha256 = "de305086396a241069098918b79dfed363c52811f126a8376cf8fd56843e5ec5"
 archive_member = "openlist"
+
+[sing-box]
+repository = "https://github.com/SagerNet/sing-box"
+version = "1.13.13"
+source_commit = "78b2e12fbdd85e6ec956647d6f79cf0bba85c6ba"
+linux_amd64_url = "https://github.com/SagerNet/sing-box/releases/download/v1.13.13/sing-box-1.13.13-linux-amd64.tar.gz"
+linux_amd64_archive_sha256 = "bb99cabf47694625db421ee17898f36cdc1f9c2cb5decf65b12bac8d8437e842"
+linux_amd64_binary_sha256 = "2d8e80be91f196aff601f3ab2d5a855ac1dd5a447666cb7ec0cad99323b87dfe"
+linux_amd64_archive_member = "sing-box-1.13.13-linux-amd64/sing-box"
+linux_arm64_url = "https://github.com/SagerNet/sing-box/releases/download/v1.13.13/sing-box-1.13.13-linux-arm64.tar.gz"
+linux_arm64_archive_sha256 = "d7fab87b921933eb281d8ee7bd5377cdd8228089f1f7c807c9363a6a2329286c"
+linux_arm64_binary_sha256 = "d21721e273f5aab8a20a1bfda378602fdca2b40d9a7145a781bbdef1f496a1d5"
+linux_arm64_archive_member = "sing-box-1.13.13-linux-arm64/sing-box"
+
+[xray-masque]
+repository = "https://github.com/XTLS/Xray-core"
+version = "26.10.21"
+source_commit = "1b1647cd9ddf0abc34b981d4611fc03bcac1ca74"
+go_version = "1.27.2"
+patch_sha256 = "2547422a7509595e7b2bacb1bd39d33a2a1cc7285536608549494834329c77d8"
+linux_amd64_binary_sha256 = "1eb12cfbbb9bb704c67e5bfb8fe34d7cfcfc66c12e7f9d97d5d273c1a7895191"
+linux_arm64_binary_sha256 = "793b8c84539cbacef5ef14fb8f5d7a3e330776df07a6f52f6ce0aaa59592095d"
+
+[xray-amneziawg]
+repository = "https://github.com/XTLS/Xray-core"
+version = "26.10.21"
+source_commit = "1b1647cd9ddf0abc34b981d4611fc03bcac1ca74"
+go_version = "1.27.2"
+amneziawg_version = "3.1.20260828"
+amneziawg_source_commit = "b5928efb6ca19f0153958460c3d141f04abc5c2e"
+patch_sha256 = "05818b5bd743da21ed520b6ba7378c6a58c2d53901ab64a5dc1a2df37eaa0d5d"
+parameters_sha256 = "3c665f1c14ae9fe71c087b7bb75ac40ae88b0ca32e4b3c84700f592d7f1d61c5"
+linux_amd64_binary_sha256 = "8c263ee556dfa4e198be07a0912885a784d5c41c6792b08e37b7650fb7f85a92"
+linux_arm64_binary_sha256 = "f8384dc6b6e72ecd44d367813778f3bf6ceb3c1be53b4c48fe7aee77a59719dc"
+
+[mtg-multi]
+repository = "https://github.com/MHSanaei/mtg-multi"
+version = "1.16.1"
+source_commit = "a45ebefed80e16949426381ef53fb5f1c1e4958d"
+go_version = "1.27.3"
+patch_sha256 = "e511c2799f06acffdfcefc3b020a436ec61fd00ceef56c17da3e7f6dbd29e319"
+linux_amd64_binary_sha256 = "575f0f9380c37920f94f7d27561fdb1462ace391f537b6a0c0d530a4f23e2cd8"
+linux_arm64_binary_sha256 = "51f4d07842549b580f7727c757288c26ba7eb675d92f5b35c2dc3f2dca796f43"
