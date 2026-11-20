@@ -31,6 +31,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm run prebuild x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm run web:build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p clash-verge --lib cmd::nodectl::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm exec tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked

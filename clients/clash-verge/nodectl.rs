@@ -242,11 +242,11 @@ async fn confirm_import(origin: &Url) -> bool {
     let (send, receive) = tokio::sync::oneshot::channel();
     crate::core::handle::Handle::app_handle()
         .dialog()
-        .title("导入 nodectl 公共配置")
         .message(format!(
             "通过 {} 领取并启用此设备的订阅？",
             origin.origin().ascii_serialization()
         ))
+        .title("导入 nodectl 公共配置")
         .buttons(MessageDialogButtons::OkCancelCustom(
             "导入并启用".into(),
             "取消".into(),
@@ -354,7 +354,9 @@ async fn sync_profile(origin: &Url, uid: SmallString, record: &Installation) -> 
         crate::config::profiles::profiles_save_file_safe().await?;
         let _ = Timer::global().refresh().await;
     }
-    let outcome = patch_profiles_config_by_profile_index(uid).await?;
+    let outcome = patch_profiles_config_by_profile_index(uid)
+        .await
+        .map_err(|_| anyhow::anyhow!("无法启用本机订阅。请稍后重试。"))?;
     ensure!(outcome.is_valid(), "配置校验尚未通过。请稍后重试。");
     Ok(())
 }

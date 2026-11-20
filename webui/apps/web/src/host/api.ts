@@ -146,17 +146,27 @@ export function createAdminApi(
         z.object({
           links: z.array(z.string()),
           claim_url: z.string().nullable().default(null),
-          bootstrap: z.object({
-            nodectl: z.object({
-              version: z.literal(1), origin: z.string(), client: z.uuid(),
-              enrollment: z.uuid(), name: z.string(),
-            }),
-          }).nullable().default(null),
+          bootstrap: z
+            .object({
+              nodectl: z.object({
+                version: z.literal(1),
+                origin: z.string(),
+                client: z.uuid(),
+                enrollment: z.uuid(),
+                name: z.string(),
+              }),
+            })
+            .nullable()
+            .default(null),
           bootstrap_unsupported: z.array(z.string()).default([]),
         }),
       ),
     downloadClientBootstrap: (config) =>
-      download('nodectl-' + config.nodectl.client + '.yaml', 'application/yaml', JSON.stringify(config, null, 2) + '\n'),
+      download(
+        'nodectl-' + config.nodectl.client + '.yaml',
+        'application/yaml',
+        JSON.stringify(config, null, 2) + '\n',
+      ),
     copyClientClaimLink: (url) => navigator.clipboard.writeText(url),
     newClaimRequest: () => crypto.randomUUID(),
     claimClient: async (id, claimRequest) => {

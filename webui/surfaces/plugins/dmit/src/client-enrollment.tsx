@@ -69,22 +69,30 @@ export default function ClientEnrollment({
         <div className="grid gap-2">
           <p>{t('sharedClients.publicFileHint')}</p>
           <div>
-            <Action onPress={() => {
-              const config = details.data?.bootstrap;
-              if (config) api.downloadClientBootstrap(config);
-            }}>
+            <Action
+              onPress={() => {
+                const config = details.data?.bootstrap;
+                if (config) api.downloadClientBootstrap(config);
+              }}
+            >
               {t('sharedClients.publicFile')}
             </Action>
           </div>
         </div>
       )}
       {available && unsupported && (
-        <AlertBanner icon="!" tone="danger" title={t('sharedClients.publicFileUnsupported')}
-          description={unsupported} />
+        <AlertBanner
+          icon="!"
+          tone="danger"
+          title={t('sharedClients.publicFileUnsupported')}
+          description={unsupported}
+        />
       )}
       {available && url && (
         <details open={details.data?.bootstrap ? undefined : true}>
-          <summary className="cursor-pointer font-semibold">{t('sharedClients.personalDownloads')}</summary>
+          <summary className="cursor-pointer font-semibold">
+            {t('sharedClients.personalDownloads')}
+          </summary>
           <div className="mt-3 grid min-w-0 gap-2">
             <p>{t('sharedClients.claimLink')}</p>
             <code className="break-all select-all text-sm">{url}</code>

@@ -89,7 +89,8 @@ const zh = {
     enrollmentUpgrade: '将此节点升级到 v0.12.0 或更新版本，即可领取客户端配置。',
     claimLink: '共享领取链接',
     publicFile: '下载公共配置文件',
-    publicFileHint: '把同一个文件发给所有获准用户。他们在 Windows 版 Clash Verge Rev（nodectl 适配版）导入一次，再用各自的账号登录。',
+    publicFileHint:
+      '把同一个文件发给所有获准用户。他们在 Windows 版 Clash Verge Rev（nodectl 适配版）导入一次，再用各自的账号登录。',
     publicFileUnsupported: '下列附加入站暂不支持自动签发凭据，移除后即可下载公共配置文件。',
     personalDownloads: '个人订阅与旧版客户端',
     copyClaim: '复制领取链接',

@@ -84,9 +84,22 @@ fn activation_status_tracks_private_device_capabilities_and_revocation() -> Resu
         ..Default::default()
     };
     db.add_users(vec![("alice", "test-password", 1)])?;
+    let config = toml::from_str(crate::config::EXAMPLE)?;
+    db.save_client(
+        &config,
+        None,
+        clients::Client {
+            name: "shared".into(),
+            inbounds: BTreeSet::new(),
+            usernames: BTreeSet::from(["alice".into()]),
+            links: vec![],
+            claim_key: None,
+        },
+    )?;
     let id = Uuid::new_v4();
     let mut laptop = device();
     laptop.username.clear();
+    laptop.client = db.clients.keys().next().copied();
     laptop.enrollment = Some(Enrollment::Claimed {
         request: Uuid::new_v4(),
         expires: now + 600,

@@ -105,8 +105,13 @@ test('只从共享客户端领取配置，已有设备可查看且原订阅有�
     const descriptor = await downloadShared();
     expect(await downloadShared()).toBe(descriptor);
     expect(JSON.parse(descriptor)).toEqual({
-      nodectl: { version: 1, origin: expect.any(String), client: clientId,
-        enrollment: expect.any(String), name: clientName },
+      nodectl: {
+        version: 1,
+        origin: expect.any(String),
+        client: clientId,
+        enrollment: expect.any(String),
+        name: clientName,
+      },
     });
     await drawer.getByText('个人订阅与旧版客户端', { exact: true }).click();
     const mihomo = drawer.getByRole('button', { name: '下载 Mihomo 配置', exact: true });
