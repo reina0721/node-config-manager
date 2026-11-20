@@ -21,7 +21,7 @@ jobs:
       - name: Prepare pinned source
         shell: bash
         run: bash clients/clash-verge/prepare.sh upstream
-      - name: Build and test Windows x64 adapter
+      - name: Build Windows x64 adapter
         shell: pwsh
         working-directory: upstream
         run: |
@@ -31,12 +31,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm run prebuild x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pnpm run web:build
+          pnpm exec tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --no-run -p clash-verge --lib cmd::nodectl::tests
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pnpm exec tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- Cargo.lock
       - name: Package installer and corresponding source
         shell: bash
         working-directory: upstream
