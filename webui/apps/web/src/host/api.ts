@@ -152,7 +152,7 @@ export function createAdminApi(
                 version: z.literal(1),
                 origin: z.string(),
                 client: z.uuid(),
-                enrollment: z.uuid(),
+              enrollment: z.guid(),
                 name: z.string(),
               }),
             })
