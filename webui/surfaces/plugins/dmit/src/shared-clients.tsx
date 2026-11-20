@@ -9,7 +9,6 @@ import { ConfirmDialog } from '@community-go/ui-adapter/overlays';
 import { useNodeManagement, type ProxyAccess } from '../../../src/node-management';
 import { EditorDrawer } from './collection-controls';
 import { ConsoleLink, useNodeQuery, useNodeText } from './common';
-import ClientDeviceDownloads from './client-device-downloads';
 import ClientEnrollment from './client-enrollment';
 
 type Client = ProxyAccess['clients'][number];
@@ -27,12 +26,10 @@ function changed(items: string[], id: string, enabled: boolean): string[] {
 
 export default function SharedClients({
   data,
-  observedAt,
   subscriptions,
   refresh,
 }: {
   data: ProxyAccess;
-  observedAt: number;
   subscriptions: boolean;
   refresh: () => Promise<void>;
 }) {
@@ -40,7 +37,6 @@ export default function SharedClients({
   const t = useNodeText();
   const configuration = useNodeQuery(api.configuration);
   const [draft, setDraft] = useState<Draft>();
-  const [downloadTarget, setDownloadTarget] = useState<string | null>();
   const [enrollmentTarget, setEnrollmentTarget] = useState<string>();
   const [baseline, setBaseline] = useState<Draft>();
   const [confirm, setConfirm] = useState<'save' | 'delete'>();
@@ -100,7 +96,6 @@ export default function SharedClients({
   };
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
   const revokes = Boolean(draft?.client?.usernames.some((name) => !draft.users.includes(name)));
-  const downloadClient = data.clients.find((client) => client.id === downloadTarget);
   const enrollmentClient = data.clients.find((client) => client.id === enrollmentTarget);
   return (
     <>
@@ -118,6 +113,11 @@ export default function SharedClients({
         }
       >
         {!data.enabled && <ConsoleLink to="dmit.panel">{t('console.authSettings')}</ConsoleLink>}
+        {!data.enrollment_supported && data.clients.length > 0 && (
+          <div className="px-5 py-3 text-sm">
+            <ConsoleLink to="dmit.operations">{t('sharedClients.enrollmentUpgrade')}</ConsoleLink>
+          </div>
+        )}
         {(configuration.error || (error && !draft)) && (
           <AlertBanner
             icon="!"
@@ -139,7 +139,7 @@ export default function SharedClients({
             },
             {
               id: 'users',
-              label: t('sharedClients.usersTab'),
+              label: t('sharedClients.allowedUsers'),
               render: (client) => client.usernames.length,
             },
             {
@@ -149,7 +149,7 @@ export default function SharedClients({
             },
             {
               id: 'edit',
-              label: t('common.operation'),
+              label: t('access.actions'),
               render: (client) => (
                 <div className="flex flex-wrap gap-2">
                   {data.enrollment_supported && (
@@ -159,25 +159,6 @@ export default function SharedClients({
                       onPress={() => setEnrollmentTarget(client.id)}
                     >
                       {t('sharedClients.enrollment')}
-                    </Action>
-                  )}
-                  {(!data.enrollment_supported ||
-                    data.users.some((user) =>
-                      user.devices.some(
-                        (device) => device.client === client.id && !device.enrolled,
-                      ),
-                    )) && (
-                    <Action
-                      size="sm"
-                      variant="secondary"
-                      disabled={busy}
-                      onPress={() => setDownloadTarget(client.id)}
-                    >
-                      {t(
-                        data.enrollment_supported
-                          ? 'sharedClients.legacyDownloads'
-                          : 'sharedClients.deviceDownloads',
-                      )}
                     </Action>
                   )}
                   <Action
@@ -194,29 +175,6 @@ export default function SharedClients({
           ]}
         />
       </Section>
-      {data.users.length > 0 && (
-        <Section
-          title={t('sharedClients.legacy')}
-          description={t('sharedClients.legacyDescription')}
-          action={
-            <Action variant="secondary" disabled={busy} onPress={() => setDownloadTarget(null)}>
-              {t('sharedClients.deviceDownloads')}
-            </Action>
-          }
-          children={null}
-        />
-      )}
-      {(downloadTarget === null || downloadClient) && (
-        <ClientDeviceDownloads
-          key={downloadClient?.id ?? 'legacy'}
-          client={downloadClient}
-          data={data}
-          observedAt={observedAt}
-          subscriptions={subscriptions}
-          refresh={refresh}
-          onClose={() => setDownloadTarget(undefined)}
-        />
-      )}
       {enrollmentClient && (
         <ClientEnrollment
           key={enrollmentClient.id}

@@ -585,14 +585,6 @@ export type ProvisionOptions = Readonly<{
 export const proxyUsersSchema = z.array(
   z.object({ username: z.string(), device_limit: z.number().int().optional() }).strict(),
 );
-export const nativeProfileSchema = z.object({
-  name: z.string(),
-  format: z.templateLiteral([
-    z.enum(['native-hysteria/', 'native-wireguard/', 'native-tuic/', 'native-amneziawg/']),
-    z.string().regex(/^[a-f0-9]{64}$/),
-  ]),
-});
-export type NativeProfile = z.infer<typeof nativeProfileSchema>;
 export const proxyAccessSchema = z.object({
   created_device_id: z.string().optional(),
   clients: z
@@ -610,7 +602,6 @@ export const proxyAccessSchema = z.object({
     .default([]),
   traffic_cycles: z.boolean().optional(),
   enrollment_supported: z.boolean().optional(),
-  extra_profile_formats: z.array(z.enum(['xray-config', 'links', 'qr', 'native'])).optional(),
   enabled: z.boolean(),
   ttl_seconds: z.number(),
   portal: z.string(),

@@ -1,147 +1,129 @@
-import { test, expect } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+import { test, expect, type Page } from '@playwright/test';
 import { login, navigate } from './fixture';
 
-test('浏览器认证只在面板设置编辑，设备配置只在客户端下载', async ({ page }) => {
+async function access<T>(page: Page, path = 'proxy-access', body?: object): Promise<T> {
+  return page.evaluate(
+    async ({ path, body }) => {
+      let init: RequestInit | undefined;
+      if (body) {
+        const session = await fetch('/nc/api/session');
+        if (!session.ok) throw new Error('Fixture session unavailable');
+        const { csrf } = (await session.json()) as { csrf: string };
+        init = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+          body: JSON.stringify(body),
+        };
+      }
+      const response = await fetch('/nc/api/' + path, init);
+      if (!response.ok) throw new Error('Fixture API failed with HTTP ' + response.status);
+      return (await response.json()) as T;
+    },
+    { path, body },
+  );
+}
+
+test('认证有效期只在面板设置编辑', async ({ page }) => {
   await login(page);
   await navigate(page, '面板设置');
   const ttl = page.getByRole('textbox', { name: '认证缓存时间（秒）', exact: true });
   const save = page.getByRole('button', { name: '保存', exact: true });
   const originalTtl = await ttl.inputValue();
-  const username = 'ux-fixture';
+  await ttl.fill('59');
+  await expect(ttl).toHaveAttribute('aria-invalid', 'true');
+  await expect(save).toBeDisabled();
+  await ttl.fill(originalTtl);
+  await navigate(page, '客户端');
+  await expect(page.getByRole('textbox', { name: '认证缓存时间（秒）' })).toHaveCount(0);
+});
+
+test('只从共享客户端领取配置，已有设备可查看且原订阅有效', async ({ page }) => {
+  test.setTimeout(180_000);
+  await login(page);
+  const username = 'ux-' + randomUUID();
+  const clientName = '浏览器验收客户端 ' + username.slice(0, 11);
+  const initial = await access<{ enabled: boolean; ttl_seconds: number }>(page);
+  let clientId: string | undefined;
+
   try {
-    await ttl.fill('59');
-    await expect(ttl).toHaveAttribute('aria-invalid', 'true');
-    await expect(save).toBeDisabled();
-    await ttl.fill('600');
-    if (originalTtl !== '600') {
-      await save.click();
-      await expect(page.getByText('代理认证设置已保存。')).toBeVisible();
-    }
+    if (!initial.enabled)
+      await access(page, 'proxy-access', { ...initialSettings(initial), enabled: true });
+    await access(page, 'proxy-access', {
+      action: 'create',
+      users: [{ username, password: 'isolated-browser-test', device_limit: 2 }],
+    });
+    const { clients } = await access<{ clients: { id: string; name: string }[] }>(
+      page,
+      'proxy-access',
+      {
+        action: 'save-client',
+        name: clientName,
+        usernames: [username],
+        inbounds: [],
+        links: [],
+      },
+    );
+    clientId = clients.find(({ name }) => name === clientName)?.id;
+    if (!clientId) throw new Error('Missing fixture client');
+    const { created_device_id: legacy } = await access<{ created_device_id: string }>(
+      page,
+      'proxy-access',
+      {
+        action: 'create-device',
+        username,
+        label: '已有设备',
+        client: clientId,
+      },
+    );
+    const profilePath = 'proxy-access/profile/' + legacy + '/subscriptions';
+    const previous = await access<{ content: string }>(page, profilePath);
+    await access(page, 'proxy-access', { action: 'prepare-client', id: clientId, count: 2 });
 
     await navigate(page, '客户端');
-    await expect(page.getByRole('textbox', { name: '认证缓存时间（秒）' })).toHaveCount(0);
     await expect(page.getByRole('tab', { name: '共享客户端' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
-    await page.getByRole('tab', { name: '用户与设备' }).click();
-    await page.getByRole('button', { name: '新建用户', exact: true }).click();
-    const create = page.getByRole('dialog', { name: '新建用户' });
-    await create.getByLabel('用户名', { exact: true }).fill(username);
-    await create.getByLabel('密码', { exact: true }).fill('isolated-browser-test');
-    await create.getByRole('button', { name: '新建用户', exact: true }).click();
-    await expect(create).toBeHidden();
-    const openAccount = async () => {
-      await page
-        .getByRole('row', { name: new RegExp(username) })
-        .getByRole('button', { name: '管理', exact: true })
-        .click();
-      return page.getByRole('dialog', { name: username, exact: true });
-    };
-    const account = await openAccount();
-    await expect(account.getByLabel('设备名称', { exact: true })).toHaveCount(0);
-    await expect(
-      account.getByRole('button', { name: '导出 Mihomo YAML', exact: true }),
-    ).toHaveCount(0);
-    await account.getByRole('button', { name: '关闭抽屉' }).click();
-    const openDownloads = async () => {
-      await page
-        .getByRole('heading', { name: '原有设备配置', exact: true })
-        .locator('../..')
-        .getByRole('button', { name: '设备与下载', exact: true })
-        .click();
-      const downloads = page.getByRole('dialog', { name: '设备与下载', exact: true });
-      const userSelect = downloads.getByRole('button', { name: /用户名/ });
-      if ((await userSelect.getByText(username, { exact: true }).count()) === 0) {
-        await userSelect.click();
-        await page.getByRole('option', { name: username, exact: true }).click();
-      }
-      return downloads;
-    };
-    await page.getByRole('tab', { name: '共享客户端' }).click();
-    let downloads = await openDownloads();
-    await downloads.getByLabel('设备名称', { exact: true }).fill('Chromium fixture');
-    await downloads.getByRole('button', { name: '登记设备', exact: true }).click();
-    await expect(
-      downloads.getByRole('button', { name: /Chromium fixture.*选择设备/ }),
-    ).toBeVisible();
-    await downloads.getByRole('button', { name: '关闭抽屉' }).click();
-
-    await navigate(page, '面板设置');
-    await page.getByRole('button', { name: '启用认证', exact: true }).click();
-    await page
-      .getByRole('alertdialog')
-      .getByRole('button', { name: '启用认证', exact: true })
-      .click();
-    await expect(page.getByRole('button', { name: '停用认证', exact: true })).toBeVisible();
-    await navigate(page, '订阅与下载');
-    await expect(page.getByRole('button', { name: '导出 Xray JSON' })).toHaveCount(0);
-    await page.getByRole('link', { name: '前往客户端下载' }).click();
-    await expect(page.getByRole('heading', { name: '客户端', level: 1 })).toBeVisible();
-    downloads = await openDownloads();
-    const mihomo = downloads.getByRole('button', { name: '导出 Mihomo YAML', exact: true });
-    const pendingDownload = page.waitForEvent('download');
+    await expect(page.getByText('原有设备配置', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '旧设备配置', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '设备与下载', exact: true })).toHaveCount(0);
+    const row = page
+      .getByRole('grid', { name: '共享客户端' })
+      .getByRole('row')
+      .filter({ hasText: clientName });
+    const entry = row.getByRole('button', { name: '领取与下载', exact: true });
+    await entry.click();
+    const drawer = page.getByRole('dialog', { name: '领取与下载', exact: true });
+    await expect(drawer.getByLabel('用户名', { exact: true })).toHaveCount(0);
+    const mihomo = drawer.getByRole('button', { name: '下载 Mihomo 配置', exact: true });
+    await expect(mihomo).toBeEnabled();
+    const pending = page.waitForEvent('download');
     await mihomo.focus();
     await page.keyboard.press('Enter');
-    expect((await pendingDownload).suggestedFilename()).toBe('nodectl-mihomo.yaml');
-    await expect(mihomo).toBeFocused();
+    expect((await pending).suggestedFilename()).toBe('nodectl-mihomo-weighted.yaml');
+    await expect(drawer.getByRole('button', { name: '为另一台设备下载' })).toBeEnabled();
     await page.keyboard.press('Escape');
-    await expect(downloads).toBeHidden();
-    await expect(
-      page
-        .getByRole('heading', { name: '原有设备配置', exact: true })
-        .locator('../..')
-        .getByRole('button', { name: '设备与下载', exact: true }),
-    ).toBeFocused();
+    await expect(drawer).toBeHidden();
+    await expect(entry).toBeFocused();
 
-    const expired = await page.evaluate(async (username) => {
-      const { csrf } = (await (await fetch('/nc/api/session')).json()) as { csrf: string };
-      const response = await fetch('/nc/api/proxy-access', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-        body: JSON.stringify({
-          action: 'policy',
-          username,
-          disabled: false,
-          expires: 1,
-          quota_bytes: null,
-        }),
-      });
-      return response.status;
-    }, username);
-    expect(expired).toBe(200);
-    await page.reload();
-    downloads = await openDownloads();
-    await expect(downloads.getByRole('status')).toContainText('此账号已到期');
-    await expect(
-      downloads.getByRole('button', { name: /Chromium fixture.*选择设备/ }),
-    ).toBeVisible();
-    await expect(downloads.getByRole('button', { name: '登记设备', exact: true })).toBeDisabled();
-    await expect(mihomo).toHaveCount(0);
+    await page.getByRole('tab', { name: '用户与设备' }).click();
+    await page
+      .getByRole('row', { name: new RegExp(username) })
+      .getByRole('button', { name: '管理', exact: true })
+      .click();
+    const account = page.getByRole('dialog', { name: username, exact: true });
+    await expect(account.getByText('已有设备', { exact: true })).toBeVisible();
+    await expect(account.getByRole('button', { name: '撤销设备', exact: true })).toBeEnabled();
+    await expect(account.getByRole('button', { name: /下载|导出.*配置/ })).toHaveCount(0);
+    expect(await access(page, profilePath)).toEqual(previous);
   } finally {
-    await page.evaluate(
-      async ({ username, originalTtl }) => {
-        const session = await fetch('/nc/api/session');
-        if (!session.ok) return;
-        const value: unknown = await session.json();
-        if (
-          !value ||
-          typeof value !== 'object' ||
-          !('csrf' in value) ||
-          typeof value.csrf !== 'string'
-        )
-          return;
-        const csrf = value.csrf;
-        const update = (body: object) =>
-          fetch('/nc/api/proxy-access', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-            body: JSON.stringify(body),
-          });
-        await update({ action: 'settings', enabled: false, ttl_seconds: Number(originalTtl) });
-        await update({ action: 'delete', usernames: [username] });
-      },
-      { username, originalTtl },
-    );
+    if (clientId) await access(page, 'proxy-access', { action: 'delete-client', id: clientId });
+    await access(page, 'proxy-access', { action: 'delete', usernames: [username] });
+    if (!initial.enabled) await access(page, 'proxy-access', initialSettings(initial));
   }
 });
+
+function initialSettings({ enabled, ttl_seconds }: { enabled: boolean; ttl_seconds: number }) {
+  return { action: 'settings', enabled, ttl_seconds };
+}
