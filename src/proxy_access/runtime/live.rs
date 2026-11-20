@@ -372,11 +372,22 @@ pub(in crate::proxy_access) fn origin_ip(store: &Store, id: Uuid) -> Option<IpAd
             .ok()?,
     )
     .ok()?;
+    latest_public_origin(&value)
+}
+
+fn latest_public_origin(value: &Value) -> Option<IpAddr> {
     value["ips"]
         .as_object()?
         .iter()
         .filter_map(|(address, time)| {
-            let address = address.parse::<IpAddr>().ok()?;
+            // Xray's address formatter encloses IPv6 in brackets.
+            let address = address
+                .strip_prefix('[')
+                .and_then(|value| value.strip_suffix(']'))
+                .unwrap_or(address)
+                .parse::<IpAddr>()
+                .ok()?
+                .to_canonical();
             let time = time
                 .as_u64()
                 .or_else(|| time.as_str()?.parse::<u64>().ok())?;
@@ -397,6 +408,25 @@ mod tests {
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
+    }
+
+    #[test]
+    fn reads_the_latest_public_address_from_xray_online_statistics() {
+        assert_eq!(
+            latest_public_origin(&json!({"ips":{
+                "8.8.8.8": 10,
+                "[2606:4700::1111]": "20",
+                "[::1]": 30,
+                "192.168.0.1": 40,
+                "1.1.1.1": "invalid"
+            }})),
+            Some("2606:4700::1111".parse().unwrap())
+        );
+        assert_eq!(
+            latest_public_origin(&json!({"ips":{"[::ffff:8.8.8.8]": 10}})),
+            Some("8.8.8.8".parse().unwrap())
+        );
+        assert_eq!(latest_public_origin(&json!({})), None);
     }
 
     #[test]
