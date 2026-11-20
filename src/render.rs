@@ -647,14 +647,14 @@ pub fn files_with_geodata(
     s: &Secrets,
     geodata: Option<&std::path::Path>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
-    files_for_template(c, s, geodata, true)
+    files_for_template(c, s, geodata, TEMPLATE_VERSION)
 }
 
 pub(crate) fn files_for_template(
     c: &Config,
     s: &Secrets,
     geodata: Option<&std::path::Path>,
-    trusted_origin: bool,
+    template_version: &str,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     let p = &c.ports;
     let addresses = if c.node.ipv6.is_empty() {
@@ -791,7 +791,7 @@ pub(crate) fn files_for_template(
                 .to_string(),
         ),
     ]);
-    crate::web_services::nginx(c, &mut vars, trusted_origin)?;
+    crate::web_services::nginx(c, &mut vars, trusted_transport_origin(template_version))?;
     if c.shared_console {
         vars.entry("SHARE_LIMIT").or_default().push_str(
             "\n    limit_req_zone $binary_remote_addr zone=nc_requests:1m rate=2r/s;\n    limit_req_zone $binary_remote_addr zone=nc_login:1m rate=10r/m;"
@@ -818,7 +818,7 @@ pub(crate) fn files_for_template(
     vars.insert("CN_ASSETS", if c.routes_cn() {
         format!("Environment=XRAY_LOCATION_ASSET={}\nCapabilityBoundingSet=CAP_NET_RAW\nAmbientCapabilities=CAP_NET_RAW", crate::cn_warp::runtime_asset_dir()?.display())
     } else {String::new()});
-    let operations = operations(c);
+    let operations = operations_for_template(c, template_version);
     let mut xray = xray(c, s);
     crate::egress::append_outbounds(c, s, &mut xray)?;
     let mut files = BTreeMap::from([
@@ -867,6 +867,10 @@ pub(crate) fn files_for_template(
 
 /// Shared non-secret deployment operations, usable before key initialization.
 pub fn operations(c: &Config) -> Value {
+    operations_for_template(c, TEMPLATE_VERSION)
+}
+
+fn operations_for_template(c: &Config, template_version: &str) -> Value {
     let p = &c.ports;
     let mut domain_issue = vec![
         "--issue".to_owned(),
@@ -911,7 +915,7 @@ pub fn operations(c: &Config) -> Value {
             "/usr/local/bin/nodectl renew-hook".into(),
         ]
     };
-    json!({"schema_version":1,"template_version":TEMPLATE_VERSION,
+    json!({"schema_version":1,"template_version":template_version,
         "dns":c.domains().iter().flat_map(|d| c.ips().iter().map(|ip| json!({"name":d,"type":if ip.contains(':') {"AAAA"} else {"A"},"value":ip})).collect::<Vec<_>>()).collect::<Vec<_>>(),
         "certificates":{"domain":{"sans":c.domains(),"keylength":"ec-384","directory":c.tls.domain_cert_dir,
             "acme_issue_args":domain_issue,"acme_install_args":install(&c.node.domain,&c.tls.domain_cert_dir)},

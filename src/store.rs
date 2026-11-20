@@ -255,7 +255,8 @@ impl Store {
                     || v2
                     || v3
                     || (manifest.template_version == render::TEMPLATE_VERSION
-                        && manifest.generator_version == env!("CARGO_PKG_VERSION"))
+                        && (manifest.generator_version == env!("CARGO_PKG_VERSION")
+                            || manifest.generator_version == "0.13.0"))
                     || (manifest.template_version == "4"
                         && [
                             "0.5.0", "0.5.1", "0.6.0", "0.6.1", "0.6.2", "0.6.3", "0.6.4", "0.6.5",
@@ -272,7 +273,7 @@ impl Store {
             manifest.generator_version == env!("CARGO_PKG_VERSION")
                 || [
                     "0.8.0", "0.8.1", "0.8.2", "0.9.0", "0.10.0", "0.10.1", "0.11.0", "0.11.1",
-                    "0.11.2", "0.12.0", "0.12.1"
+                    "0.11.2", "0.12.0", "0.12.1", "0.13.0"
                 ]
                 .contains(&manifest.generator_version.as_str())
                 || c.management.is_none(),
@@ -305,7 +306,7 @@ impl Store {
                 &c,
                 &s,
                 Some(&path.join("geodata")),
-                render::trusted_transport_origin(&manifest.template_version),
+                &manifest.template_version,
             )?
         };
         ensure!(

@@ -195,8 +195,10 @@ fn template_two_explicit_versions_preserve_strict_snapshot_integrity() {
 fn current_and_previous_template_four_snapshots_keep_original_headers() {
     let (_tmp, store) = sandbox();
     let (config, secrets) = store.inputs().unwrap();
-    let old_files = render::files_for_template(&config, &secrets, None, false).unwrap();
+    let old_files = render::files_for_template(&config, &secrets, None, "4").unwrap();
     let new_files = render::files(&config, &secrets).unwrap();
+    let old_operations: Value = serde_json::from_slice(&old_files["operations.json"]).unwrap();
+    assert_eq!(old_operations["template_version"], "4");
     let forwarded = |files: &BTreeMap<String, Vec<u8>>, expected: &str| {
         assert!(
             std::str::from_utf8(&files["nginx.conf"])
