@@ -1,0 +1,53 @@
+name: Windows adapter candidate
+on:
+  push:
+    branches: ['codex/nodectl-windows-candidate']
+    paths: ['clients/clash-verge/**', '.github/workflows/windows-adapter.yml']
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26.13.0'
+      - name: Prepare pinned source
+        shell: bash
+        run: bash clients/clash-verge/prepare.sh upstream
+      - name: Build and test Windows x64 adapter
+        shell: pwsh
+        working-directory: upstream
+        run: |
+          npm install --global pnpm@12.16.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm run prebuild x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p clash-verge --lib cmd::nodectl::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm exec tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package installer and corresponding source
+        shell: bash
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          mkdir -p ../windows
+          mapfile -t installers < <(find target/x86_64-pc-windows-msvc/release/bundle/nsis -maxdepth 1 -name '*.exe')
+          test "${#installers[@]}" -eq 1
+          cp -- "${installers[0]}" ../windows/nodectl-verge-windows-x64.exe
+          git add -- src-tauri/src/cmd src-tauri/src/ipc.rs src-tauri/src/utils/dirs.rs src-tauri/tauri.conf.json src-tauri/tauri.windows.conf.json src/pages/_layout.tsx src/components/layout/nodectl-enrollment.tsx
+          git archive --format=zip --prefix=nodectl-verge/ -o ../windows/nodectl-verge-source.zip "$(git write-tree)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nodectl-verge-windows-x64
+          path: windows/*
+          if-no-files-found: error

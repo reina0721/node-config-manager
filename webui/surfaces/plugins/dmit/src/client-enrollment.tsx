@@ -21,6 +21,7 @@ export default function ClientEnrollment({
   const loadDetails = useCallback(() => api.clientDetails(client.id), [api, client.id]);
   const details = useNodeQuery(loadDetails);
   const url = details.data?.claim_url;
+  const unsupported = details.data?.bootstrap_unsupported.join('、');
   const [busy, setBusy] = useState<'mihomo' | 'xray' | 'subscriptions'>();
   const [device, setDevice] = useState<string>();
   const [claimRequest, setClaimRequest] = useState(api.newClaimRequest);
@@ -64,9 +65,27 @@ export default function ClientEnrollment({
       )}
       {!available && <p>{t('sharedClients.claimDependency')}</p>}
       {available && !client.claim_enabled && <p>{t('sharedClients.claimOff')}</p>}
+      {available && details.data?.bootstrap && (
+        <div className="grid gap-2">
+          <p>{t('sharedClients.publicFileHint')}</p>
+          <div>
+            <Action onPress={() => {
+              const config = details.data?.bootstrap;
+              if (config) api.downloadClientBootstrap(config);
+            }}>
+              {t('sharedClients.publicFile')}
+            </Action>
+          </div>
+        </div>
+      )}
+      {available && unsupported && (
+        <AlertBanner icon="!" tone="danger" title={t('sharedClients.publicFileUnsupported')}
+          description={unsupported} />
+      )}
       {available && url && (
-        <>
-          <div className="grid min-w-0 gap-2">
+        <details open={details.data?.bootstrap ? undefined : true}>
+          <summary className="cursor-pointer font-semibold">{t('sharedClients.personalDownloads')}</summary>
+          <div className="mt-3 grid min-w-0 gap-2">
             <p>{t('sharedClients.claimLink')}</p>
             <code className="break-all select-all text-sm">{url}</code>
             <div>
@@ -83,7 +102,7 @@ export default function ClientEnrollment({
               </Action>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <Action
               disabled={busy !== undefined && busy !== 'mihomo'}
               loading={busy === 'mihomo'}
@@ -123,7 +142,7 @@ export default function ClientEnrollment({
               </>
             )}
           </div>
-        </>
+        </details>
       )}
       {message && <p role="status">{message}</p>}
     </EditorDrawer>

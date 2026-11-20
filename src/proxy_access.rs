@@ -554,14 +554,23 @@ pub(crate) fn client_links(store: &Store, id: Uuid) -> Result<Value> {
     let data = Access(store).read()?.context("not_found")?;
     let client = data.clients.get(&id).context("not_found")?;
     let config = runtime::installed(store)?;
-    let claim_url = if data.enabled && config.distributes() {
-        client
-            .share_key(store, id)?
-            .map(|key| format!("{}/nodes/claim/#{key}", enrollment::origin(&config)))
+    let key = if data.enabled && config.distributes() {
+        client.share_key(store, id)?
     } else {
         None
     };
-    Ok(json!({"links": client.links, "claim_url": claim_url}))
+    let origin = enrollment::origin(&config);
+    let claim_url = key.map(|key| format!("{origin}/nodes/claim/#{key}"));
+    let unsupported = client.unsupported_online(&config).collect::<Vec<_>>();
+    let bootstrap = key.filter(|_| unsupported.is_empty()).map(|key| {
+        json!({"nodectl": {
+            "version":1,"origin":origin,"client":id,"enrollment":key,"name":client.name
+        }})
+    });
+    Ok(
+        json!({"links":client.links,"claim_url":claim_url,"bootstrap":bootstrap,
+        "bootstrap_unsupported":unsupported}),
+    )
 }
 
 pub fn export(store: &Store) -> Result<Value> {
@@ -915,20 +924,17 @@ fn subscription_token(key: &hmac::Key, id: Uuid, device: &Device) -> String {
     )
 }
 
-pub(crate) fn subscription_device(store: &Store, token: &str) -> Result<Option<Uuid>> {
+fn token_device<'a>(
+    store: &Store,
+    data: &'a Database,
+    token: &str,
+) -> Result<Option<(Uuid, &'a Device)>> {
     let mut raw = [0; 32];
     if hex::decode_to_slice(token, &mut raw).is_err() {
         return Ok(None);
     }
     let id = Uuid::from_slice(&raw[..16])?;
-    let Some(data) = Access(store).read()?.filter(|data| data.enabled) else {
-        return Ok(None);
-    };
-    let Some(device) = data
-        .devices
-        .get(&id)
-        .filter(|device| data.profile_access(device, admin_auth::now()).is_some())
-    else {
+    let Some(device) = data.devices.get(&id) else {
         return Ok(None);
     };
     let Ok(key) = crate::share::device_key(store) else {
@@ -939,7 +945,59 @@ pub(crate) fn subscription_device(store: &Store, token: &str) -> Result<Option<U
             .as_bytes()
             .ct_eq(token.as_bytes()),
     )
-    .then_some(id))
+    .then_some((id, device)))
+}
+
+pub(crate) fn subscription_device(store: &Store, token: &str) -> Result<Option<Uuid>> {
+    let Some(data) = Access(store).read()?.filter(|data| data.enabled) else {
+        return Ok(None);
+    };
+    Ok(token_device(store, &data, token)?
+        .filter(|(_, device)| data.profile_access(device, admin_auth::now()).is_some())
+        .map(|(id, _)| id))
+}
+
+pub(crate) fn device_activation(store: &Store, token: &str) -> Result<Option<Value>> {
+    let Some(data) = Access(store).read()? else {
+        return Ok(None);
+    };
+    let Some((_, device)) = token_device(store, &data, token)? else {
+        return Ok(None);
+    };
+    let now = admin_auth::now();
+    let Some(enrollment::Enrollment::Claimed {
+        expires,
+        provisioned: true,
+        ..
+    }) = device.enrollment
+    else {
+        return Ok(None);
+    };
+    let result = if device.username.is_empty() {
+        if expires <= now {
+            json!({"state":"enrollment-expired"})
+        } else if data.profile_access(device, now).is_some() {
+            json!({"state":"awaiting-login","expires_at":expires})
+        } else {
+            json!({"state":"unavailable"})
+        }
+    } else if data.profile_access(device, now).is_none() {
+        json!({"state":"unavailable"})
+    } else if let Some(expiry) = data.expiry(device, now) {
+        let account = &data.users[&device.username];
+        let usage = meter::read(store, account.ledger_id())?;
+        if account
+            .quota_bytes
+            .is_some_and(|quota| usage.total() >= quota)
+        {
+            json!({"state":"quota-exhausted"})
+        } else {
+            json!({"state":"active","expires_at":expiry})
+        }
+    } else {
+        json!({"state":"login-required"})
+    };
+    Ok(Some(result))
 }
 
 pub(crate) fn render_profile(

@@ -1,0 +1,153 @@
+diff --git a/src-tauri/src/cmd/mod.rs b/src-tauri/src/cmd/mod.rs
+index 1bb2d30..2fda889 100644
+--- a/src-tauri/src/cmd/mod.rs
++++ b/src-tauri/src/cmd/mod.rs
+@@ -99,6 +99,7 @@ pub mod lightweight;
+ pub mod listener;
+ pub mod media_unlock_checker;
+ pub mod network;
++pub mod nodectl;
+ pub mod profile;
+ pub mod proxy;
+ pub mod runtime;
+diff --git a/src-tauri/src/cmd/profile.rs b/src-tauri/src/cmd/profile.rs
+index 106302b..ad9557e 100644
+--- a/src-tauri/src/cmd/profile.rs
++++ b/src-tauri/src/cmd/profile.rs
+@@ -122,6 +122,9 @@ pub async fn reorder_profile(active_id: std::string::String, over_id: std::strin
+ #[tauri::command]
+ #[specta::specta]
+ pub async fn create_profile(item: ProfileCreate, file_data: Option<std::string::String>) -> CmdResult {
++    if let Some(data) = file_data.as_deref().filter(|data| super::nodectl::is_bootstrap(data)) {
++        return super::nodectl::import(data).await.map_err(|error| coded_error("NODECTL_IMPORT", error));
++    }
+     let item: PrfItem = item.into();
+     let file_data = file_data.map(String::from);
+     match profiles_append_item_with_filedata_safe(&item, file_data).await {
+diff --git a/src-tauri/src/ipc.rs b/src-tauri/src/ipc.rs
+index 334ef1c..3df3392 100644
+--- a/src-tauri/src/ipc.rs
++++ b/src-tauri/src/ipc.rs
+@@ -75,6 +75,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
+             cmd::view_profile,
+             cmd::patch_profile,
+             cmd::create_profile,
++            cmd::nodectl::nodectl_state,
++            cmd::nodectl::nodectl_open_login,
++            cmd::nodectl::nodectl_renew_expired,
+             cmd::import_profile,
+             cmd::reorder_profile,
+             cmd::update_profile,
+diff --git a/src-tauri/src/utils/dirs.rs b/src-tauri/src/utils/dirs.rs
+index 236b3f1..7c80cc4 100644
+--- a/src-tauri/src/utils/dirs.rs
++++ b/src-tauri/src/utils/dirs.rs
+@@ -9,14 +9,14 @@ use std::{
+ use tauri::Manager as _;
+ 
+ #[cfg(not(feature = "verge-dev"))]
+-pub static APP_ID: &str = "io.github.clash-verge-rev.clash-verge-rev";
++pub static APP_ID: &str = "com.nodectl.verge";
+ #[cfg(not(feature = "verge-dev"))]
+-pub static BACKUP_DIR: &str = "clash-verge-rev-backup";
++pub static BACKUP_DIR: &str = "nodectl-verge-backup";
+ 
+ #[cfg(feature = "verge-dev")]
+-pub static APP_ID: &str = "io.github.clash-verge-rev.clash-verge-rev.dev";
++pub static APP_ID: &str = "com.nodectl.verge.dev";
+ #[cfg(feature = "verge-dev")]
+-pub static BACKUP_DIR: &str = "clash-verge-rev-backup-dev";
++pub static BACKUP_DIR: &str = "nodectl-verge-backup-dev";
+ 
+ pub static CLASH_CONFIG: &str = "config.yaml";
+ pub static VERGE_CONFIG: &str = "verge.yaml";
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index 68be249..4fba566 100755
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -13,12 +13,12 @@
+       "icons/Assets.car"
+     ],
+     "resources": ["resources"],
+-    "publisher": "Clash Verge Rev",
++    "publisher": "node-config-manager",
+     "externalBin": ["sidecar/verge-mihomo", "sidecar/verge-mihomo-alpha"],
+     "copyright": "GNU General Public License v3.0",
+     "category": "DeveloperTool",
+     "shortDescription": "Clash Verge Rev",
+-    "createUpdaterArtifacts": true
++    "createUpdaterArtifacts": false
+   },
+   "build": {
+     "beforeBuildCommand": "pnpm run web:build",
+@@ -27,23 +27,19 @@
+     "devUrl": "http://localhost:3000/",
+     "removeUnusedCommands": true
+   },
+-  "productName": "Clash Verge",
+-  "identifier": "io.github.clash-verge-rev.clash-verge-rev",
++  "productName": "Nodectl Verge",
++  "identifier": "com.nodectl.verge",
+   "plugins": {
+     "updater": {
+       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyOEMyRjBCQkVGOUJEREYKUldUZnZmbStDeStNMHU5Mmo1N24xQXZwSVRYbXA2NUpzZE5oVzlqeS9Bc0t6RVV4MmtwVjBZaHgK",
+-      "endpoints": [
+-        "https://update.hwdns.net/https://github.com/clash-verge-rev/clash-verge-rev/releases/download/updater/update-proxy.json",
+-        "https://gh-proxy.org/https://github.com/clash-verge-rev/clash-verge-rev/releases/download/updater/update-proxy.json",
+-        "https://github.com/clash-verge-rev/clash-verge-rev/releases/download/updater/update.json"
+-      ],
++      "endpoints": [],
+       "windows": {
+         "installMode": "passive"
+       }
+     },
+     "deep-link": {
+       "desktop": {
+-        "schemes": ["clash", "clash-verge"]
++        "schemes": ["nodectl-verge"]
+       }
+     }
+   },
+diff --git a/src-tauri/tauri.windows.conf.json b/src-tauri/tauri.windows.conf.json
+index 4897d03..f39da88 100644
+--- a/src-tauri/tauri.windows.conf.json
++++ b/src-tauri/tauri.windows.conf.json
+@@ -1,6 +1,6 @@
+ {
+   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+-  "identifier": "io.github.clash-verge-rev.clash-verge-rev",
++  "identifier": "com.nodectl.verge",
+   "bundle": {
+     "targets": ["nsis"],
+     "windows": {
+@@ -15,9 +15,7 @@
+         "displayLanguageSelector": true,
+         "installerIcon": "icons/icon.ico",
+         "languages": ["SimpChinese", "English", "Russian"],
+-        "installMode": "perMachine",
+-        "installerHooks": "./packages/windows/core-hashes.nsh",
+-        "template": "./packages/windows/installer.nsi"
++        "installMode": "currentUser"
+       }
+     }
+   },
+diff --git a/src/pages/_layout.tsx b/src/pages/_layout.tsx
+index 5962551..600af94 100644
+--- a/src/pages/_layout.tsx
++++ b/src/pages/_layout.tsx
+@@ -14,6 +14,7 @@ import {
+   WindowControls,
+   WindowResizeHandles,
+ } from '@/components/layout/window-controller'
++import { NodectlEnrollmentNotice } from '@/components/layout/nodectl-enrollment'
+ import { useI18n } from '@/hooks/use-i18n'
+ import { useVerge } from '@/hooks/use-verge'
+ import { useWindowDecorations } from '@/hooks/use-window'
+@@ -166,6 +167,7 @@ const Layout = () => {
+             <div className="the-bar"></div>
+             <div className="the-content">
+               <BaseErrorBoundary>
++                <NodectlEnrollmentNotice />
+                 <Outlet />
+               </BaseErrorBoundary>
+             </div>

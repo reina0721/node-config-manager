@@ -33,6 +33,9 @@ import type {
 export * from './node-model';
 export type ClientExportFormat = 'xray' | 'mihomo' | 'mihomo-weighted';
 export type DeviceExportFormat = 'mihomo-weighted' | 'subscriptions' | 'xray-config';
+export type ClientBootstrap = {
+  nodectl: { version: 1; origin: string; client: string; enrollment: string; name: string };
+};
 export type NodeManagementPort = Readonly<{
   overview: () => Promise<NodeOverview>;
   configuration: () => Promise<ConfigurationView>;
@@ -44,7 +47,13 @@ export type NodeManagementPort = Readonly<{
   jobDetails: (id: string, node?: string) => Promise<ManagedJob>;
   versions: () => Promise<VersionsView>;
   proxyAccess: () => Promise<ProxyAccess>;
-  clientDetails: (id: string) => Promise<{ links: string[]; claim_url: string | null }>;
+  clientDetails: (id: string) => Promise<{
+    links: string[];
+    claim_url: string | null;
+    bootstrap: ClientBootstrap | null;
+    bootstrap_unsupported: string[];
+  }>;
+  downloadClientBootstrap: (config: ClientBootstrap) => void;
   copyClientClaimLink: (url: string) => Promise<void>;
   newClaimRequest: () => string;
   claimClient: (id: string, request: string) => Promise<string>;

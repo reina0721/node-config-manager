@@ -13,6 +13,8 @@ use std::{
 
 const LIMIT: usize = 8192;
 const CLAIM: &str = "/nodes/claim";
+const MACHINE_CLAIM: &str = "/nodes/claim/install";
+const ACTIVATION: &str = "/nodes/claim/status";
 pub const SOCKET: &str = "/run/nodectl-share/api.sock";
 pub fn health() -> Result<()> {
     #[cfg(unix)]
@@ -180,6 +182,22 @@ fn route(
                 include_bytes!("../assets/share/claim.js"),
             );
         }
+        ACTIVATION => {
+            let Some(token) =
+                header(request, "authorization")?.and_then(|v| v.strip_prefix("Bearer "))
+            else {
+                return error(stream, 401);
+            };
+            return match crate::proxy_access::device_activation(store, token)? {
+                Some(status) => response(
+                    stream,
+                    200,
+                    "application/json; charset=utf-8",
+                    &serde_json::to_vec(&status)?,
+                ),
+                None => error(stream, 401),
+            };
+        }
         _ => {}
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
@@ -252,6 +270,15 @@ struct Claim {
     request: uuid::Uuid,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MachineClaim {
+    key: uuid::Uuid,
+    request: uuid::Uuid,
+    client: uuid::Uuid,
+    origin: String,
+}
+
 fn claim(
     store: &Store,
     request: &httparse::Request<'_, '_>,
@@ -262,10 +289,20 @@ fn claim(
         header(request, "content-type")? == Some("application/json"),
         "Invalid claim request"
     );
-    let origin = header(request, "origin")?.context("Missing origin")?;
-    let input: Claim = serde_json::from_slice(body)?;
+    let (key, id, origin, client) = if request.path == Some(MACHINE_CLAIM) {
+        ensure!(
+            header(request, "origin")?.is_none(),
+            "Browser request on machine endpoint"
+        );
+        let input: MachineClaim = serde_json::from_slice(body)?;
+        (input.key, input.request, input.origin, Some(input.client))
+    } else {
+        let origin = header(request, "origin")?.context("Missing origin")?;
+        let input: Claim = serde_json::from_slice(body)?;
+        (input.key, input.request, origin.to_owned(), None)
+    };
     let (status, payload) =
-        crate::proxy_access::claim_client_subscription(store, input.key, input.request, origin)
+        crate::proxy_access::claim_client_subscription(store, key, id, &origin, client)
             .unwrap_or_else(|_| (503, json!({"error":"unavailable"})));
     response(
         stream,
@@ -292,7 +329,8 @@ pub(crate) fn connection(store: &Store, stream: &mut (impl Read + Write)) -> Res
         match request.parse(&bytes) {
             Ok(httparse::Status::Partial) => continue,
             Ok(httparse::Status::Complete(length))
-                if request.method == Some("POST") && request.path == Some(CLAIM) =>
+                if request.method == Some("POST")
+                    && matches!(request.path, Some(CLAIM | MACHINE_CLAIM)) =>
             {
                 let content_length = header(&request, "content-length")
                     .ok()
@@ -587,6 +625,28 @@ mod tests {
             assert!(!response.contains("Access-Control-Allow-Origin"));
         }
     }
+    #[test]
+    fn desktop_claim_and_status_are_separate_from_browser_claim() {
+        let (_temp, store) = crate::tests::sandbox();
+        let body = r#"{"origin":"https://node.example.org","key":"b91532fe-00be-457d-91be-43724c504559","client":"76005d54-7405-469b-a520-988e5b14c47b","request":"34af5c82-3338-40eb-80c8-554cb3ef9851"}"#;
+        let native = |path: &str, origin: &str| {
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: node.example.org\r\n{origin}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        assert!(
+            request(
+                &store,
+                &native(MACHINE_CLAIM, "Origin: https://node.example.org\r\n")
+            )
+            .starts_with("HTTP/1.1 400")
+        );
+        assert!(request(&store, &native(CLAIM, "")).starts_with("HTTP/1.1 400"));
+        assert!(get(&store, ACTIVATION, None).starts_with("HTTP/1.1 401"));
+        assert!(get(&store, ACTIVATION, Some("invalid")).starts_with("HTTP/1.1 401"));
+    }
+
     #[test]
     fn exclusive_mutations_and_bad_success_records_fail_closed() {
         let (_tmp, store) = crate::tests::sandbox();

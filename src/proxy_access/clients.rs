@@ -19,6 +19,26 @@ pub(super) struct Client {
 }
 
 impl Client {
+    pub(super) fn unsupported_online<'a>(
+        &self,
+        config: &'a Config,
+    ) -> impl Iterator<Item = &'a str> {
+        config
+            .management
+            .iter()
+            .flat_map(|m| m.active_inbounds())
+            .filter(|(id, inbound)| {
+                self.inbounds.contains(id)
+                    && matches!(
+                        inbound.protocol,
+                        catalogue::Protocol::Tuic
+                            | catalogue::Protocol::Http
+                            | catalogue::Protocol::Mixed
+                    )
+            })
+            .map(|(_, inbound)| inbound.remark.as_str())
+    }
+
     pub(super) fn share_key(&self, store: &Store, id: Uuid) -> Result<Option<Uuid>> {
         if self.usernames.is_empty() {
             return Ok(None);

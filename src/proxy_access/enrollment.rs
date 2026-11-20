@@ -32,6 +32,8 @@ struct ClaimRequest {
     key: Uuid,
     request: Uuid,
     origin: String,
+    #[serde(default)]
+    client: Option<Uuid>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -227,22 +229,33 @@ fn claim(store: &Store, input: ClaimRequest) -> Result<Value> {
     let mut data = access.read()?.context("not_found")?;
     let mut client = None;
     for (&id, definition) in &data.clients {
+        if input.client.is_some_and(|client| client != id) {
+            continue;
+        }
         if let Some(key) = definition.share_key(store, id)?
             && bool::from(key.as_bytes().ct_eq(input.key.as_bytes()))
         {
             client = Some(id);
         }
     }
-    let id = issue(
-        store,
-        &access,
-        &mut data,
-        client.context("not_found")?,
-        input.request,
-    )?;
+    let client = client.context("not_found")?;
+    if input.client.is_some() {
+        ensure!(
+            data.clients[&client]
+                .unsupported_online(&config)
+                .next()
+                .is_none(),
+            "unsupported_inbounds"
+        );
+    }
+    let id = issue(store, &access, &mut data, client, input.request)?;
     let token = subscription_token(&crate::share::device_key(store)?, id, &data.devices[&id]);
     Ok(json!({
         "browser_login":runtime::portal(&config),
+        "expires_at": match data.devices[&id].enrollment {
+            Some(Enrollment::Claimed { expires, .. }) => expires,
+            _ => unreachable!("issued installation"),
+        },
         "mihomo":format!("/nodes/sub/mihomo-weighted?token={token}"),
         "xray":format!("/nodes/sub/xray-config?token={token}"),
     }))
@@ -366,6 +379,7 @@ async fn handle_claim(mut stream: tokio::net::UnixStream, store: Arc<Store>) -> 
         Err(error) => match error.to_string().as_str() {
             "not_found" => (404, json!({"error":"not_found"})),
             "enrollment_busy" => (429, json!({"error":"enrollment_busy"})),
+            "unsupported_inbounds" => (409, json!({"error":"unsupported_inbounds"})),
             _ => (503, json!({"error":"unavailable"})),
         },
     };
@@ -398,6 +412,7 @@ pub(crate) fn request_claim(
     key: Uuid,
     request: Uuid,
     origin: &str,
+    client: Option<Uuid>,
 ) -> Result<(u16, Value)> {
     let mut stream = UnixStream::connect(socket(store))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -406,6 +421,7 @@ pub(crate) fn request_claim(
         key,
         request,
         origin: origin.into(),
+        client,
     })?;
     ensure!(
         bytes.len() as u64 <= REQUEST_LIMIT,

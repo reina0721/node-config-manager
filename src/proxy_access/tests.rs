@@ -74,6 +74,56 @@ fn unbound_claims_are_on_demand_and_idempotent() -> Result<()> {
 }
 
 #[test]
+fn activation_status_tracks_private_device_capabilities_and_revocation() -> Result<()> {
+    use super::enrollment::Enrollment;
+    let (_temp, store) = crate::tests::sandbox();
+    crate::share::rotate(&store, None)?;
+    let now = admin_auth::now();
+    let mut db = Database {
+        enabled: true,
+        ..Default::default()
+    };
+    db.add_users(vec![("alice", "test-password", 1)])?;
+    let id = Uuid::new_v4();
+    let mut laptop = device();
+    laptop.username.clear();
+    laptop.enrollment = Some(Enrollment::Claimed {
+        request: Uuid::new_v4(),
+        expires: now + 600,
+        provisioned: true,
+        live: true,
+    });
+    let token = subscription_token(&crate::share::device_key(&store)?, id, &laptop);
+    db.devices.insert(id, laptop);
+    let access = Access(&store);
+    let _guard = access.lock()?;
+    access.write(&db)?;
+    assert!(device_activation(&store, &id.simple().to_string())?.is_none());
+    assert_eq!(
+        device_activation(&store, &token)?.unwrap()["state"],
+        "awaiting-login"
+    );
+    let laptop = db.devices.get_mut(&id).unwrap();
+    laptop.username = "alice".into();
+    laptop.authenticated = Some(now);
+    access.write(&db)?;
+    assert_eq!(
+        device_activation(&store, &token)?.unwrap()["state"],
+        "active"
+    );
+    db.devices.get_mut(&id).unwrap().authenticated = None;
+    access.write(&db)?;
+    assert_eq!(
+        device_activation(&store, &token)?.unwrap()["state"],
+        "login-required"
+    );
+    db.devices.remove(&id);
+    access.write(&db)?;
+    assert!(device_activation(&store, &token)?.is_none());
+    Ok(())
+}
+
+#[test]
 fn shared_client_assignments_revoke_only_the_removed_users_device() -> Result<()> {
     let config: crate::config::Config = toml::from_str(crate::config::EXAMPLE)?;
     let mut db = Database {

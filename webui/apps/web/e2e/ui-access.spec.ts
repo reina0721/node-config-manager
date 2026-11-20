@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { test, expect, type Page } from '@playwright/test';
 import { login, navigate } from './fixture';
 
@@ -95,6 +96,19 @@ test('只从共享客户端领取配置，已有设备可查看且原订阅有�
     const drawer = page.getByRole('dialog', { name: '领取与下载', exact: true });
     await expect(drawer.getByLabel('用户名', { exact: true })).toHaveCount(0);
     await expect(drawer.getByText(/安装名额/)).toHaveCount(0);
+    const sharedFile = drawer.getByRole('button', { name: '下载公共配置文件', exact: true });
+    const downloadShared = async () => {
+      const [file] = await Promise.all([page.waitForEvent('download'), sharedFile.click()]);
+      expect(file.suggestedFilename()).toBe(`nodectl-${clientId}.yaml`);
+      return readFile(await file.path(), 'utf8');
+    };
+    const descriptor = await downloadShared();
+    expect(await downloadShared()).toBe(descriptor);
+    expect(JSON.parse(descriptor)).toEqual({
+      nodectl: { version: 1, origin: expect.any(String), client: clientId,
+        enrollment: expect.any(String), name: clientName },
+    });
+    await drawer.getByText('个人订阅与旧版客户端', { exact: true }).click();
     const mihomo = drawer.getByRole('button', { name: '下载 Mihomo 配置', exact: true });
     await expect(mihomo).toBeEnabled();
     const pending = page.waitForEvent('download');
