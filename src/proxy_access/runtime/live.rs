@@ -7,6 +7,7 @@ use std::{
     io::Write,
     net::IpAddr,
     os::unix::fs::{FileTypeExt, MetadataExt},
+    path::Path,
     process::{Command, Stdio},
 };
 use uuid::Uuid;
@@ -36,13 +37,15 @@ fn configure_api(config: &mut Value, socket: &str, track_origin: bool) {
 struct Core<'a> {
     socket: String,
     binary: &'a str,
+    geodata: Option<&'a Path>,
 }
 
 impl<'a> Core<'a> {
-    fn new(name: &str, binary: &'a str) -> Self {
+    fn new(name: &str, binary: &'a str, geodata: Option<&'a Path>) -> Self {
         Self {
             socket: socket(name),
             binary,
+            geodata,
         }
     }
 
@@ -58,7 +61,13 @@ impl<'a> Core<'a> {
     fn call(&self, verb: &str, args: &[&str]) -> Result<String> {
         self.check_socket()?;
         let socket = &self.socket;
-        let reply = Command::new(self.binary)
+        let mut command = Command::new(self.binary);
+        if let Some(geodata) = self.geodata {
+            // Xray parses routing matchers in the CLI before the RPC. Match
+            // the checked asset directory of the running CN-aware instance.
+            command.env("XRAY_LOCATION_ASSET", geodata);
+        }
+        let reply = command
             .args(["api", verb, "-s", &format!("unix:{socket}"), "-t", "2"])
             .args(args)
             .stdin(Stdio::null())
@@ -267,6 +276,11 @@ pub(in crate::proxy_access) fn install(
 ) -> Result<()> {
     crate::store::check_private(&store.state_dir, true)?;
     let (_, config, secrets, _, mut core) = project(store, Some(data))?;
+    let geodata = config
+        .routes_cn()
+        .then(crate::cn_warp::runtime_asset_dir)
+        .transpose()?;
+    let geodata = geodata.as_deref();
     let masque = super::masque::active(&config)
         .then(|| isolate_core(&mut core, |row| row["protocol"] == "masque"))
         .transpose()?;
@@ -295,13 +309,13 @@ pub(in crate::proxy_access) fn install(
         "proxy_runtime_protocol_unavailable"
     );
 
-    Core::new("core", &config.runtime.xray_binary).update(&core, id)?;
+    Core::new("core", &config.runtime.xray_binary, geodata).update(&core, id)?;
     if !bootstrap {
         if let Some(masque) = masque {
-            Core::new("masque", super::masque::BINARY).update(&masque, id)?;
+            Core::new("masque", super::masque::BINARY, geodata).update(&masque, id)?;
         }
         if let Some(amnezia) = amnezia {
-            Core::new("amneziawg", super::amneziawg::BINARY).update(&amnezia, id)?;
+            Core::new("amneziawg", super::amneziawg::BINARY, geodata).update(&amnezia, id)?;
         }
         if attached(crate::catalogue::Protocol::Mtproto) {
             let pin = super::RelayIdentity::load(store)?.spki_pin()?;
@@ -326,27 +340,32 @@ pub(in crate::proxy_access) fn activate(store: &Store, data: &Database, id: Uuid
 
 pub(in crate::proxy_access) fn prune(store: &Store, data: &Database) -> Result<()> {
     let (_, config, secrets, _, mut core) = project(store, Some(data))?;
+    let geodata = config
+        .routes_cn()
+        .then(crate::cn_warp::runtime_asset_dir)
+        .transpose()?;
+    let geodata = geodata.as_deref();
     if super::masque::active(&config) {
         let adapter = isolate_core(&mut core, |row| row["protocol"] == "masque")?;
-        Core::new("masque", super::masque::BINARY).prune(&adapter, &data.retired)?;
+        Core::new("masque", super::masque::BINARY, geodata).prune(&adapter, &data.retired)?;
     }
     let tags = super::amneziawg::tags(&config);
     if !tags.is_empty() {
         let adapter = isolate_core(&mut core, |row| {
             row["tag"].as_str().is_some_and(|tag| tags.contains(tag))
         })?;
-        Core::new("amneziawg", super::amneziawg::BINARY).prune(&adapter, &data.retired)?;
+        Core::new("amneziawg", super::amneziawg::BINARY, geodata).prune(&adapter, &data.retired)?;
     }
     if super::mtproto::active(&config) {
         let pin = super::RelayIdentity::load(store)?.spki_pin()?;
         super::mtproto::refresh(&config, &secrets, data, &pin)?;
     }
-    Core::new("core", &config.runtime.xray_binary).prune(&core, &data.retired)
+    Core::new("core", &config.runtime.xray_binary, geodata).prune(&core, &data.retired)
 }
 
 pub(in crate::proxy_access) fn origin_ip(store: &Store, id: Uuid) -> Option<IpAddr> {
     let config = super::installed(store).ok()?;
-    let core = Core::new("core", &config.runtime.xray_binary);
+    let core = Core::new("core", &config.runtime.xray_binary, None);
     let value: Value = serde_json::from_str(
         &core
             .call("statsonlineiplist", &["-email", &device_alias(id)])
@@ -370,7 +389,7 @@ pub(in crate::proxy_access) fn origin_ip(store: &Store, id: Uuid) -> Option<IpAd
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, path::Path, process::Child, thread, time::Duration};
+    use std::{fs, path::PathBuf, process::Child, thread, time::Duration};
 
     struct Server(Child);
     impl Drop for Server {
@@ -385,6 +404,7 @@ mod tests {
     fn real_xray_installs_and_reaps_users_without_restarting() -> Result<()> {
         use base64::{Engine, engine::general_purpose::STANDARD};
         let binary = std::env::var("NODECTL_ACCESS_TEST_XRAY")?;
+        let geodata = std::env::var_os("NODECTL_ACCESS_TEST_XRAY_ASSETS").map(PathBuf::from);
         let folder = tempfile::tempdir()?;
         let path = folder.path().join("running.json");
         let api = folder.path().join("api.sock").to_str().unwrap().to_owned();
@@ -406,10 +426,22 @@ mod tests {
             "outbounds":[{"tag":"block","protocol":"blackhole"}],
             "routing":{"rules":[{"type":"field","inboundTag":["public"],"outboundTag":"block"}]}
         });
+        if geodata.is_some() {
+            base["routing"]["rules"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                "type":"field","domain":["geosite:cn"],"ip":["geoip:cn"],"outboundTag":"block"
+                }));
+        }
         configure_api(&mut base, &api, true);
         fs::write(&path, serde_json::to_vec(&base)?)?;
+        let mut process = Command::new(&binary);
+        if let Some(geodata) = &geodata {
+            process.env("XRAY_LOCATION_ASSET", geodata);
+        }
         let mut server = Server(
-            Command::new(&binary)
+            process
                 .args(["run", "-config"])
                 .arg(&path)
                 .stdin(Stdio::null())
@@ -426,6 +458,7 @@ mod tests {
         let core = Core {
             socket: api,
             binary: &binary,
+            geodata: geodata.as_deref(),
         };
         let mut desired = base.clone();
         desired["inbounds"][0]["settings"]["clients"] = json!([{"id":id,"email":alias}]);
