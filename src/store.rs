@@ -256,7 +256,7 @@ impl Store {
                     || v3
                     || (manifest.template_version == render::TEMPLATE_VERSION
                         && (manifest.generator_version == env!("CARGO_PKG_VERSION")
-                            || ["0.13.0", "0.13.1"]
+                            || ["0.13.0", "0.13.1", "0.13.2", "0.13.3"]
                                 .contains(&manifest.generator_version.as_str())))
                     || (manifest.template_version == "4"
                         && [
@@ -274,7 +274,7 @@ impl Store {
             manifest.generator_version == env!("CARGO_PKG_VERSION")
                 || [
                     "0.8.0", "0.8.1", "0.8.2", "0.9.0", "0.10.0", "0.10.1", "0.11.0", "0.11.1",
-                    "0.11.2", "0.12.0", "0.12.1", "0.13.0", "0.13.1"
+                    "0.11.2", "0.12.0", "0.12.1", "0.13.0", "0.13.1", "0.13.2", "0.13.3"
                 ]
                 .contains(&manifest.generator_version.as_str())
                 || c.management.is_none(),
