@@ -223,6 +223,11 @@ fn route(
     let Ok((id, bytes)) = share::subscription_profiles(store, format, device) else {
         return error(stream, 503);
     };
+    if device.is_some()
+        && let Some(agent) = header(request, "user-agent")?
+    {
+        crate::proxy_access::report_subscription_client(store, token, agent);
+    }
     if path == "/nodes/api" {
         let profiles: serde_json::Value = serde_json::from_slice(&bytes)?;
         let portal = device.map(|_| crate::proxy_access::portal_url(store));

@@ -49,8 +49,14 @@ pub(crate) fn locked_asset(component: &str, asset: &str) -> Result<Vec<u8>> {
         .or_else(|| lock.get(format!("{asset}_archive_sha256")))
         .and_then(toml::Value::as_str)
         .context("Pinned SHA256 missing")?;
+    let device_geodata = component == "device-geodata";
+    let trusted_host = if device_geodata {
+        "https://download.db-ip.com/free/"
+    } else {
+        "https://github.com/"
+    };
     ensure!(
-        url.starts_with("https://github.com/") && digest.len() == 64,
+        url.starts_with(trusted_host) && digest.len() == 64,
         "Invalid artifact lock"
     );
     let temporary = tempfile::tempdir()?;
@@ -82,7 +88,7 @@ pub(crate) fn locked_asset(component: &str, asset: &str) -> Result<Vec<u8>> {
         hex::encode(Sha256::digest(&bytes)) == digest,
         "Pinned artifact digest mismatch"
     );
-    if component == "geodata" {
+    if component == "geodata" || device_geodata {
         return Ok(bytes);
     }
     let member = lock

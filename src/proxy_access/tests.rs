@@ -22,12 +22,13 @@ fn device() -> Device {
         authenticated: None,
         attempts: vec![],
         enrollment: None,
+        info: Default::default(),
     }
 }
 
 #[test]
-fn enrollment_is_bounded_and_unbound_claims_are_idempotent() -> Result<()> {
-    use super::enrollment::ProfileAccess;
+fn unbound_claims_are_on_demand_and_idempotent() -> Result<()> {
+    use super::enrollment::{Enrollment, ProfileAccess};
     let config: crate::config::Config = toml::from_str(crate::config::EXAMPLE)?;
     let mut db = Database {
         enabled: true,
@@ -47,31 +48,28 @@ fn enrollment_is_bounded_and_unbound_claims_are_idempotent() -> Result<()> {
     )?;
     let client = *db.clients.keys().next().unwrap();
     let request = Uuid::new_v4();
-    assert!(db.claim_installation(client, request, 100).is_err());
-    db.prepare_enrollment(client, 1, 100)?;
-    let key = db.clients[&client].claim_key;
-    let first = db.claim_installation(client, request, 100)?;
-    assert_eq!(db.claim_installation(client, request, 101)?, first);
-    assert_eq!(db.ready_installations(client), 0);
-    assert_eq!(
-        db.claim_installation(client, Uuid::new_v4(), 100)
-            .unwrap_err()
-            .to_string(),
-        "enrollment_exhausted"
-    );
+    let (first, provisioned) = db.claim_installation(client, request, 100)?;
+    assert!(!provisioned);
+    assert_eq!(db.claim_installation(client, request, 101)?, (first, false));
+    assert!(db.profile_access(&db.devices[&first], 101).is_none());
+    let Some(Enrollment::Claimed { provisioned, .. }) =
+        &mut db.devices.get_mut(&first).unwrap().enrollment
+    else {
+        bail!("missing pending installation");
+    };
+    *provisioned = true;
+    assert_eq!(db.claim_installation(client, request, 101)?, (first, true));
+    assert_ne!(db.claim_installation(client, Uuid::new_v4(), 101)?.0, first);
     assert!(matches!(
-        db.profile_access(&db.devices[&first], 100),
+        db.profile_access(&db.devices[&first], 101),
         Some(ProfileAccess::Bootstrap)
     ));
-    assert!(db.expiry(&db.devices[&first], 100).is_none());
+    assert!(db.expiry(&db.devices[&first], 101).is_none());
     assert!(
         db.profile_access(&db.devices[&first], 100 + 86400)
             .is_none()
     );
-    db.prepare_enrollment(client, 1, 100 + 86400)?;
-    assert_eq!(db.clients[&client].claim_key, key);
-    assert!(!db.devices.contains_key(&first));
-    assert_ne!(db.claim_installation(client, request, 100 + 86400)?, first);
+    assert!(db.claim_installation(client, request, 100 + 86400).is_err());
     Ok(())
 }
 

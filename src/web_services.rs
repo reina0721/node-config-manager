@@ -786,12 +786,15 @@ pub(crate) fn publish_nonsecret_assets(
     Ok(directory)
 }
 
-pub fn nginx(c: &Config, vars: &mut BTreeMap<&'static str, String>) -> Result<()> {
-    let transports = crate::catalogue::nginx(
-        c,
-        include_str!("../templates/nginx-transports.conf.tpl"),
-        vars,
-    )?;
+pub fn nginx(
+    c: &Config,
+    vars: &mut BTreeMap<&'static str, String>,
+    trusted_origin: bool,
+) -> Result<()> {
+    let transports = include_str!("../templates/nginx-transports.conf.tpl");
+    let trusted =
+        trusted_origin.then(|| transports.replace("$proxy_add_x_forwarded_for", "$remote_addr"));
+    let transports = crate::catalogue::nginx(c, trusted.as_deref().unwrap_or(transports), vars)?;
     vars.insert("TRANSPORT_ROUTES", transports);
     vars.insert("WEB_ROUTES", String::new());
     vars.insert("FILES_SERVER", String::new());

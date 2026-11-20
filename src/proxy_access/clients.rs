@@ -1,6 +1,7 @@
 use super::{Database, Device};
-use crate::{catalogue, config::Config};
+use crate::{catalogue, config::Config, store::Store};
 use anyhow::{Result, ensure};
+use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -18,9 +19,23 @@ pub(super) struct Client {
 }
 
 impl Client {
-    pub(super) fn view(&self, id: Uuid, db: &Database) -> Value {
+    pub(super) fn share_key(&self, store: &Store, id: Uuid) -> Result<Option<Uuid>> {
+        if self.usernames.is_empty() {
+            return Ok(None);
+        }
+        if let Some(key) = self.claim_key {
+            return Ok(Some(key));
+        }
+        let relay = super::runtime::RelayIdentity::load(store)?;
+        let mut mac = hmac::Context::with_key(&relay.claim_signing_key());
+        mac.update(b"nodectl-client-claim-v2");
+        mac.update(id.as_bytes());
+        Ok(Some(Uuid::from_slice(&mac.sign().as_ref()[..16])?))
+    }
+
+    pub(super) fn view(&self, id: Uuid) -> Value {
         json!({"id":id,"name":self.name,"inbounds":self.inbounds,"usernames":self.usernames,"link_count":self.links.len(),
-            "claim_enabled":self.claim_key.is_some(),"claim_remaining":db.ready_installations(id)})
+            "claim_enabled":!self.usernames.is_empty()})
     }
 
     pub(super) fn restrict(&self, config: &Config) -> Config {
@@ -62,7 +77,7 @@ impl Database {
         catalogue: &catalogue::Catalogue,
         inbound: Uuid,
     ) -> bool {
-        if device.enrollment.is_some() {
+        if device.enrollment.is_some() && !device.live_enrollment() {
             return device
                 .client
                 .and_then(|id| self.clients.get(&id))

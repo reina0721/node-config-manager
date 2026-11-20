@@ -190,6 +190,49 @@ fn template_two_explicit_versions_preserve_strict_snapshot_integrity() {
         assert!(store.verify(&next).is_err());
     }
 }
+
+#[test]
+fn current_and_previous_template_four_snapshots_keep_original_headers() {
+    let (_tmp, store) = sandbox();
+    let (config, secrets) = store.inputs().unwrap();
+    let old_files = render::files_for_template(&config, &secrets, None, false).unwrap();
+    let new_files = render::files(&config, &secrets).unwrap();
+    let forwarded = |files: &BTreeMap<String, Vec<u8>>, expected: &str| {
+        assert!(
+            std::str::from_utf8(&files["nginx.conf"])
+                .unwrap()
+                .contains(expected)
+        );
+    };
+    forwarded(&old_files, "X-Forwarded-For $proxy_add_x_forwarded_for");
+    forwarded(&new_files, "X-Forwarded-For $remote_addr");
+    let latest = store.render().unwrap();
+    let path = store.release(&latest).unwrap();
+    let mut manifest: store::Manifest =
+        serde_json::from_slice(&fs::read(path.join("manifest.json")).unwrap()).unwrap();
+    manifest.generator_version = "0.12.1".into();
+    manifest.template_version = "4".into();
+    for (name, bytes) in &old_files {
+        store::atomic_write(&path.join(name), bytes).unwrap();
+    }
+    manifest.files = old_files
+        .iter()
+        .map(|(name, bytes)| (name.clone(), store::digest(bytes)))
+        .collect();
+    let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+    let old = store::digest(&bytes)[..32].to_owned();
+    store::atomic_write(&path.join("manifest.json"), &bytes).unwrap();
+    fs::rename(path, store.release(&old).unwrap()).unwrap();
+    let current = store.render().unwrap();
+    store.set_pointer("previous", Some(&old)).unwrap();
+    store.set_pointer("current", Some(&current)).unwrap();
+    for pointer in ["current", "previous"] {
+        store
+            .verify(&store.pointer(pointer).unwrap().unwrap())
+            .unwrap();
+    }
+}
+
 #[test]
 fn rejects_unknown_fields_at_every_level() {
     let (c, s) = fixture();

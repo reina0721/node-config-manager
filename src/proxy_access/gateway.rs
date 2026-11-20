@@ -383,7 +383,7 @@ async fn portal(
             let _permit = logins.try_acquire_owned()?;
             let result = tokio::task::spawn_blocking(move || {
                 let _permit = _permit;
-                authenticate(&store, profile, login)
+                authenticate(&store, profile, login, request.browser)
             })
             .await??;
             match result {
@@ -397,6 +397,11 @@ async fn portal(
                 LoginResult::Rate => {
                     response(429, "Too Many Requests", "尝试过于频繁，请一分钟后重试。")
                 }
+                LoginResult::Unavailable => response(
+                    503,
+                    "Service Unavailable",
+                    "当前客户端的代理入口暂时无法激活，请稍后重试。",
+                ),
             }
         }
         _ => response(404, "Not Found", "页面不存在。"),
@@ -413,6 +418,14 @@ struct Request {
     host: Option<String>,
     content_type: Option<String>,
     body: Vec<u8>,
+    browser: Browser,
+}
+
+#[derive(Default)]
+struct Browser {
+    agent: Option<String>,
+    platform: Option<String>,
+    release: Option<String>,
 }
 
 async fn request(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<Request> {
@@ -460,6 +473,11 @@ async fn request(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<Request> {
                 host: header("host")?,
                 content_type: header("content-type")?,
                 body: bytes[offset..].to_vec(),
+                browser: Browser {
+                    agent: header("user-agent")?,
+                    platform: header("sec-ch-ua-platform")?,
+                    release: header("sec-ch-ua-platform-version")?,
+                },
             },
             length,
         );
@@ -475,7 +493,7 @@ fn response(status: u16, reason: &str, message: &str) -> String {
         r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>nodectl 节点认证</title><main><h1>节点认证</h1><p role="status">{message}</p><form method="post" action="/"><p><label>用户名 <input name="username" autocomplete="username" required maxlength="64"></label></p><p><label>密码 <input type="password" name="password" autocomplete="current-password" required maxlength="256"></label></p><button>登录</button></form></main></html>"#
     );
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: same-origin\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nAccept-CH: Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version\r\nReferrer-Policy: same-origin\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'\r\n\r\n{body}",
         body.len()
     )
 }
@@ -493,10 +511,17 @@ enum LoginResult {
     Denied,
     Limit,
     Rate,
+    Unavailable,
 }
 
-fn authenticate(store: &Store, id: Uuid, login: Login) -> Result<LoginResult> {
+fn authenticate(store: &Store, id: Uuid, login: Login, browser: Browser) -> Result<LoginResult> {
     let access = Access(store);
+    let activate = access.read()?.is_some_and(|data| {
+        data.devices
+            .get(&id)
+            .is_some_and(|device| device.live_enrollment() && device.username.is_empty())
+    });
+    let _host = activate.then(|| store.lock()).transpose()?;
     let _guard = access.lock()?;
     let mut data = access.read()?.context("Proxy access state missing")?;
     let now = admin_auth::now();
@@ -537,12 +562,35 @@ fn authenticate(store: &Store, id: Uuid, login: Login) -> Result<LoginResult> {
         {
             LoginResult::Limit
         } else {
+            if enrollment && activate {
+                let mut activated = data.clone();
+                activated
+                    .devices
+                    .get_mut(&id)
+                    .context("not_found")?
+                    .username = login.username.clone();
+                if runtime::live::activate(store, &activated, id).is_err() {
+                    access.write(&data)?;
+                    return Ok(LoginResult::Unavailable);
+                }
+            }
             let device = data.devices.get_mut(&id).context("Missing device")?;
             if enrollment {
                 device.username = login.username;
             }
             device.authenticated = Some(now);
             device.attempts.clear();
+            device.info.last_login = Some(now);
+            if let Some(source) = runtime::live::origin_ip(store, id) {
+                device.info.source_ip = Some(source);
+                device.info.source_observed_at = Some(now);
+                device.info.location = super::metadata::location(store, source);
+            }
+            device.info.browser(
+                browser.agent.as_deref(),
+                browser.platform.as_deref(),
+                browser.release.as_deref(),
+            );
             LoginResult::Success
         };
     access.write(&data)?;

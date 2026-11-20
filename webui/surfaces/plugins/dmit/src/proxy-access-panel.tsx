@@ -468,6 +468,7 @@ function UserEditor({
                       {row.expires ? <Timestamp value={row.expires} /> : t('access.signedOut')}
                     </p>
                   </div>
+                  <DeviceDetails device={row} />
                   <Action
                     variant="secondary"
                     disabled={busy}
@@ -484,6 +485,65 @@ function UserEditor({
         </>
       ) : null}
     </div>
+  );
+}
+
+function DeviceDetails({ device }: { device: User['devices'][number] }) {
+  const t = useNodeText();
+  const info = device.info;
+  const unknown = t('access.deviceUnknown');
+  const location = [info?.location?.country, info?.location?.region, info?.location?.city]
+    .filter(Boolean)
+    .join(' · ');
+  const client = info?.client;
+  return (
+    <>
+      <Details
+        label={device.label}
+        items={[
+          [t('access.deviceCode'), <code className="break-all select-all">{device.id}</code>],
+          [
+            t('access.deviceLastLogin'),
+            info?.last_login ? <Timestamp value={info.last_login} /> : unknown,
+          ],
+          [
+            t('access.deviceSource'),
+            info?.source_ip ? (
+              <span className="break-all">
+                {info.source_ip}
+                {info.source_observed_at ? (
+                  <>
+                    {' '}
+                    · <Timestamp value={info.source_observed_at} />
+                  </>
+                ) : null}
+              </span>
+            ) : (
+              unknown
+            ),
+          ],
+          [t('access.deviceLocation'), location || unknown],
+          [
+            t('access.deviceSystem'),
+            info?.system ? `${info.system} · ${info.system_version ?? unknown}` : unknown,
+          ],
+          [
+            t('access.deviceClient'),
+            client ? `${client.name} · ${client.version ?? unknown}` : unknown,
+          ],
+        ]}
+      />
+      {location && (
+        <a
+          className="text-sm text-ink-muted underline"
+          href="https://db-ip.com"
+          target="_blank"
+          rel="noreferrer"
+        >
+          {t('access.deviceGeoAttribution')}
+        </a>
+      )}
+    </>
   );
 }
 

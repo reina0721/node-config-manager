@@ -408,11 +408,12 @@ async fn handle(
                 | "copy_capability_missing"
                 | "copy_target_validation"
                 | "proxy_user_exists"
-                | "invalid_enrollment_count"
-                | "enrollment_capacity"
-                | "enrollment_exhausted"
+                | "enrollment_busy"
                 | "enrollment_requires_distribution"
                 | "enrollment_requires_proxy_access"
+                | "proxy_runtime_unavailable"
+                | "proxy_runtime_protocol_unavailable"
+                | "proxy_runtime_update_failed"
                 | "version_switch_pending"
                 | "version_auth_incompatible"
                 | "version_snapshot_incompatible"
@@ -513,9 +514,10 @@ fn remedy(code: &str) -> &str {
         "invalid_upstream_chain" => "请核对出站链路。引用的出站必须可用，链路不能形成循环。",
         "invalid_upstream_pool" => "启用的轮询组至少需要两个可用的出站成员。",
         "invalid_proxy_expiry" => "请检查账号到期时间。",
-        "invalid_enrollment_count" => "每次准备 1–32 个安装名额。",
-        "enrollment_capacity" => "节点已达到设备容量上限，请先撤销不用的设备。",
-        "enrollment_exhausted" => "领取名额已用完，请准备新的安装名额。",
+        "enrollment_busy" => "当前领取请求较多，请稍后重试。",
+        "proxy_runtime_unavailable" => "代理运行组件暂未就绪，请稍后重试。",
+        "proxy_runtime_protocol_unavailable" => "附加入站的运行组件暂时无法在线激活。",
+        "proxy_runtime_update_failed" => "代理运行组件未能更新设备凭据，请稍后重试。",
         "enrollment_requires_distribution" => "请先启用节点订阅分发。",
         "enrollment_requires_proxy_access" => "客户端领取需要启用浏览器认证。",
         "managed_inbounds_require_proxy_access" => "启用附加入站或主机前，请启用浏览器认证。",

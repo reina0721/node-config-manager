@@ -1617,7 +1617,22 @@ fn activate(
     access_token: Option<&str>,
 ) -> Result<()> {
     let old = tx.current.as_deref();
-    let old_c = old.map(|v| store.verify(v).map(|p| p.0)).transpose()?;
+    let old_release = old.map(|v| store.verify_with_manifest(v)).transpose()?;
+    let old_c = old_release.as_ref().map(|(config, _, _)| config);
+    let access_enabled = crate::proxy_access::enabled(store)?;
+    let origin_trust_changed =
+        if let Some((_, _, previous)) = old_release.as_ref().filter(|_| access_enabled) {
+            let (_, _, candidate) = store.verify_with_manifest(id)?;
+            crate::render::trusted_transport_origin(&previous.template_version)
+                != crate::render::trusted_transport_origin(&candidate.template_version)
+        } else {
+            false
+        };
+    // Retire old workers before changing how Xray trusts a forwarded address.
+    // Graceful reload workers may still be forwarding an earlier header policy.
+    if origin_trust_changed && tx.services["nginx"].active {
+        command("systemctl", &["stop", "nginx"])?;
+    }
     let mut unit_changed = false;
     for (index, (dest, source)) in ENTRIES.into_iter().enumerate() {
         fs::create_dir_all(Path::new(dest).parent().unwrap())?;
@@ -1667,13 +1682,14 @@ fn activate(
     });
     let xray_changed = changed(store, id, old, "xray.json")?
         || changed(store, id, old, "systemd/xray.service")?
-        || (grants_changed && crate::proxy_access::enabled(store)?);
+        || (grants_changed && access_enabled)
+        || origin_trust_changed;
     let portal_changed = old_c.as_ref().is_some_and(|old| {
         old.auth_portal
             .as_ref()
             .map(|p| (&p.root_domain, &p.prefix))
             != c.auth_portal.as_ref().map(|p| (&p.root_domain, &p.prefix))
-    }) && crate::proxy_access::enabled(store)?;
+    }) && access_enabled;
     if portal_changed {
         command("systemctl", &["restart", "nodectl-proxy-access"])?;
     }

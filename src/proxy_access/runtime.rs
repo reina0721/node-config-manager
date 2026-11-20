@@ -1,4 +1,6 @@
 use super::{Access, Database, amneziawg, gateway, masque, mtproto, tuic};
+pub(super) mod live;
+mod wireguard_api;
 use crate::{
     config::{self, Config},
     host,
@@ -97,6 +99,9 @@ impl RelayIdentity {
     pub(super) fn spki_pin(&self) -> Result<String> {
         tuic::encode_spki(&self.certificate)
     }
+    pub(super) fn claim_signing_key(&self) -> ring::hmac::Key {
+        ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &self.key)
+    }
 
     pub(super) fn tls(&self) -> Result<rustls::ServerConfig> {
         let chain = CertificateDer::pem_slice_iter(&self.certificate)
@@ -190,6 +195,7 @@ fn check_ports(config: &Config) -> Result<()> {
 }
 
 pub(super) fn install_units(store: &Store, binary: &Path) -> Result<()> {
+    let config = installed(store)?;
     let command = format!(
         "{} --config-dir {} --state-dir {}",
         binary.display(),
@@ -197,13 +203,15 @@ pub(super) fn install_units(store: &Store, binary: &Path) -> Result<()> {
         store.state_dir.display()
     );
     let service = format!(
-        "{MARKER}[Unit]\nDescription=nodectl browser proxy authorization\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={command} proxy-access serve\nRestart=on-failure\nRestartSec=1\nUMask=0077\nNoNewPrivileges=true\nProtectSystem=strict\nReadWritePaths={}\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n",
-        store.state_dir.display()
+        "{MARKER}[Unit]\nDescription=nodectl browser proxy authorization\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={command} proxy-access serve\nRestart=on-failure\nRestartSec=1\nUMask=0077\nNoNewPrivileges=true\nGroup={}\nRuntimeDirectory=nodectl-proxy-access\nRuntimeDirectoryMode=0750\nRuntimeDirectoryPreserve=yes\nProtectSystem=strict\nReadWritePaths={} {RUNTIME}\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n",
+        config.runtime.nginx_user,
+        store.state_dir.display(),
     );
     let drop_in = format!(
         "{MARKER}[Unit]\nWants=nodectl-proxy-access.service\nAfter=nodectl-proxy-access.service\n\n[Service]\nRuntimeDirectory=nodectl-proxy-xray\nExecStartPre=\nExecStartPre=+{command} proxy-access prepare\nExecStartPre={command} proxy-access check\nExecStart=\nExecStart={command} proxy-access start\n"
     );
     fs::create_dir_all(Path::new(DROP_IN).parent().unwrap())?;
+    temporary_directory()?;
     store::atomic_write(Path::new(SERVICE), service.as_bytes())?;
     store::atomic_write(Path::new(DROP_IN), drop_in.as_bytes())?;
     Ok(())
@@ -256,51 +264,18 @@ pub(super) fn restart(store: &Store) -> Result<()> {
 
 pub fn prepare(store: &Store) -> Result<()> {
     super::certificate::verify(&installed(store)?)?;
-    let (id, source) = installed_source(store)?;
-    let (config, secrets) = store.verify(&id)?;
-    check_ports(&config)?;
-    let database = Access(store)
-        .read()?
-        .context("Proxy access state missing")?;
-    ensure!(
-        database.enabled,
-        "Proxy access state disabled while service override is installed"
-    );
-    let mut json: Value = serde_json::from_slice(&fs::read(source)?)?;
-    crate::catalogue::materialize_tls(&config, &mut json)?;
+    let (id, config, secrets, database, mut json) = project(store, None)?;
+    live::settings(&mut json, "core", true);
     let identity = RelayIdentity::load(store)?;
-    let pin = identity.pin()?;
-    let probes = config
-        .management
-        .as_ref()
-        .filter(|m| m.hosts.values().any(|h| h.enabled))
-        .map(|_| host::probe_origin(store, &id))
-        .transpose()?;
-    overlay(
-        (&config, &secrets),
-        &database,
-        &mut json,
-        GATE,
-        BACKEND,
-        &pin,
-        probes.as_ref(),
-    )?;
-    let dir = Path::new(RUNTIME);
-    if !dir.exists() {
-        fs::DirBuilder::new().mode(0o750).create(dir)?;
-    }
-    let meta = dir.symlink_metadata()?;
-    ensure!(
-        meta.is_dir() && meta.uid() == 0 && meta.mode() & 0o022 == 0,
-        "Unsafe proxy access runtime directory"
-    );
+    let dir = temporary_directory()?;
     let group = format!("root:{}", config.runtime.nginx_user);
     host::command("chown", &[&group, RUNTIME])?;
     fs::set_permissions(dir, fs::Permissions::from_mode(0o750))?;
     let mut files = Vec::new();
     if masque::active(&config) {
         masque::verify_binary()?;
-        let adapter = isolate_core(&mut json, |entry| entry["protocol"] == "masque")?;
+        let mut adapter = isolate_core(&mut json, |entry| entry["protocol"] == "masque")?;
+        live::settings(&mut adapter, "masque", false);
         files.push((masque::GENERATED.to_string(), serde_json::to_vec(&adapter)?));
     } else if Path::new(masque::GENERATED).exists() {
         fs::remove_file(masque::GENERATED)?;
@@ -308,9 +283,10 @@ pub fn prepare(store: &Store) -> Result<()> {
     if amneziawg::active(&config) {
         amneziawg::verify_binary()?;
         let tags = amneziawg::tags(&config);
-        let adapter = isolate_core(&mut json, |entry| {
+        let mut adapter = isolate_core(&mut json, |entry| {
             entry["tag"].as_str().is_some_and(|tag| tags.contains(tag))
         })?;
+        live::settings(&mut adapter, "amneziawg", false);
         files.push((
             amneziawg::GENERATED.to_string(),
             serde_json::to_vec(&adapter)?,
@@ -380,9 +356,7 @@ pub fn prepare(store: &Store) -> Result<()> {
         ));
     }
     for (path, bytes) in files {
-        store::atomic_write(Path::new(&path), &bytes)?;
-        host::command("chown", &[&group, &path])?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o640))?;
+        write_managed(Path::new(&path), &bytes, &group)?;
     }
     for (id, tun) in tuns {
         tun.start(&config, id)?;
@@ -400,6 +374,100 @@ pub fn prepare(store: &Store) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn temporary_directory() -> Result<&'static Path> {
+    let dir = Path::new(RUNTIME);
+    if !dir.exists() {
+        fs::DirBuilder::new().mode(0o750).create(dir)?;
+    }
+    let meta = dir.symlink_metadata()?;
+    ensure!(
+        meta.is_dir() && meta.uid() == 0 && meta.mode() & 0o022 == 0,
+        "Unsafe proxy access runtime directory"
+    );
+    Ok(dir)
+}
+
+pub(super) fn write_managed(path: &Path, bytes: &[u8], group: &str) -> Result<()> {
+    use std::io::Write;
+    let parent = path.parent().context("Missing runtime file parent")?;
+    ensure!(
+        parent == temporary_directory()?,
+        "Invalid runtime file path"
+    );
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    host::command(
+        "chown",
+        &[
+            group,
+            temporary.path().to_str().context("Invalid runtime path")?,
+        ],
+    )?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o640))?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path)?;
+    Ok(())
+}
+
+fn project(
+    store: &Store,
+    state: Option<&Database>,
+) -> Result<(String, Config, crate::config::Secrets, Database, Value)> {
+    let (id, source) = installed_source(store)?;
+    let (config, secrets, manifest) = store.verify_with_manifest(&id)?;
+    check_ports(&config)?;
+    let database = match state {
+        Some(data) => data.clone(),
+        None => Access(store)
+            .read()?
+            .context("Proxy access state missing")?,
+    };
+    ensure!(
+        database.enabled,
+        "Proxy access state disabled while service override is installed"
+    );
+    let mut json: Value = serde_json::from_slice(&fs::read(source)?)?;
+    crate::catalogue::materialize_tls(&config, &mut json)?;
+    let identity = RelayIdentity::load(store)?;
+    let pin = identity.pin()?;
+    let probes = config
+        .management
+        .as_ref()
+        .filter(|m| m.hosts.values().any(|h| h.enabled))
+        .map(|_| host::probe_origin(store, &id))
+        .transpose()?;
+    overlay(
+        (&config, &secrets),
+        &database,
+        &mut json,
+        GATE,
+        BACKEND,
+        &pin,
+        probes.as_ref(),
+    )?;
+    if crate::render::trusted_transport_origin(&manifest.template_version) {
+        for inbound in json["inbounds"]
+            .as_array_mut()
+            .context("Missing inbounds")?
+        {
+            if inbound["listen"]
+                .as_str()
+                .is_some_and(|address| address.starts_with('/'))
+                && matches!(
+                    inbound["streamSettings"]["network"].as_str(),
+                    Some("xhttp" | "ws" | "grpc" | "httpupgrade")
+                )
+            {
+                inbound["streamSettings"]["sockopt"]["trustedXForwardedFor"] =
+                    json!(["X-Forwarded-For"]);
+            }
+        }
+    }
+    Ok((id, config, secrets, database, json))
 }
 
 fn isolate_core(xray: &mut Value, select: impl Fn(&Value) -> bool) -> Result<Value> {
@@ -646,6 +714,15 @@ pub(super) fn overlay(
         })
         .collect();
     let managed = managed_tags(config);
+    let permits = |device: &super::Device, tag: &str| {
+        !device.live_enrollment()
+            || managed.get(tag).is_none_or(|id| {
+                config
+                    .management
+                    .as_ref()
+                    .is_some_and(|catalogue| database.install_on_inbound(device, catalogue, *id))
+            })
+    };
     let ingress_routing = per_ingress(config);
     use crate::catalogue::{HEALTH_ALIAS, device_alias, host_probe_alias};
     let hosts = config
@@ -737,14 +814,16 @@ pub(super) fn overlay(
             let private_tag = format!("egress-{tag}");
             inbounds.push(json!({
                 "tag":private_tag,"protocol":"vless","listen":format!("{},0600", path.display()),
-                "settings":{"clients":database.devices.values().map(|d| json!({"id":ingress_id(d.transit, tag)})).collect::<Vec<_>>(),"decryption":"none"}
+                "settings":{"clients":database.devices.iter().filter(|(_, device)| permits(device, tag))
+                    .map(|(id, d)| json!({"id":ingress_id(d.transit, tag),"email":device_alias(*id)}))
+                    .collect::<Vec<_>>(),"decryption":"none"}
             }));
             backend_tags.push((ingress, private_tag));
         }
     } else {
         inbounds.push(json!({
             "tag":BACK_TAG,"protocol":"vless","listen":format!("{backend},0600"),
-            "settings":{"clients":database.devices.values().map(|d| json!({"id":d.transit})).collect::<Vec<_>>(),"decryption":"none"}
+            "settings":{"clients":database.devices.iter().map(|(id, d)| json!({"id":d.transit,"email":device_alias(*id)})).collect::<Vec<_>>(),"decryption":"none"}
         }));
     }
     if let Some(catalogue) = &config.management {
@@ -783,15 +862,19 @@ pub(super) fn overlay(
         let user = device_alias(*id);
         let portal = format!("portal-{user}");
         let transit = format!("transit-{user}");
-        rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":portal_port.to_string(),
+        let granted_tags = tags
+            .iter()
+            .filter(|tag| permits(device, tag))
+            .collect::<Vec<_>>();
+        rules.push(json!({"type":"field","inboundTag":granted_tags,"user":[user],"network":"tcp","port":portal_port.to_string(),
             "domain":[format!("full:{portal_host}")],"outboundTag":portal}));
         if auth_domain.is_none() {
-            rules.push(json!({"type":"field","inboundTag":tags,"user":[user],"network":"tcp","port":LEGACY_PORT.to_string(),
+            rules.push(json!({"type":"field","inboundTag":granted_tags,"user":[user],"network":"tcp","port":LEGACY_PORT.to_string(),
                 "ip":config.ips(),"outboundTag":portal}));
         }
         let mut relays = vec![(portal.clone(), device.portal)];
         if ingress_routing {
-            for tag in &tags {
+            for tag in granted_tags {
                 let relay = format!("{transit}-{tag}");
                 rules.push(
                     json!({"type":"field","inboundTag":[tag],"user":[user],"outboundTag":relay}),
@@ -800,7 +883,7 @@ pub(super) fn overlay(
             }
         } else {
             rules.push(
-                json!({"type":"field","inboundTag":tags,"user":[user],"outboundTag":transit}),
+                json!({"type":"field","inboundTag":granted_tags,"user":[user],"outboundTag":transit}),
             );
             relays.push((transit, device.transit));
         }

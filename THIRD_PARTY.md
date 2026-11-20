@@ -13,10 +13,12 @@
 | hex | 0.4.3 | MIT OR Apache-2.0 | [source](https://github.com/KokaKiwi/rust-hex) |
 | httparse | 1.10.1 | MIT OR Apache-2.0 | [source](https://github.com/seanmonstar/httparse) |
 | libc | 0.2.190 | MIT OR Apache-2.0 | [source](https://github.com/rust-lang/libc) |
+| maxminddb | 0.28 (Cargo.lock) | ISC | [source](https://github.com/oschwald/maxminddb-rust) |
 | minijinja | 2.24.0 | Apache-2.0 | [source](https://github.com/mitsuhiko/minijinja) |
 | rand | 0.8.8 | MIT OR Apache-2.0 | [source](https://github.com/rust-random/rand) |
 | regex | 1.13.1 | MIT OR Apache-2.0 | [source](https://github.com/rust-lang/regex) |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | [source](https://github.com/servo/rust-url) |
+| prost | 0.14 (Cargo.lock) | Apache-2.0 | [source](https://github.com/tokio-rs/prost) |
 | qrcode | 0.14.1 | MIT OR Apache-2.0 | [source](https://github.com/kennytm/qrcode-rust) |
 | unicode-general-category | 1.1.0 | Apache-2.0 | [source](https://github.com/yeslogic/unicode-general-category) |
 | ring | 0.17.14 | Apache-2.0 AND ISC | [source](https://github.com/briansmith/ring) |
@@ -52,5 +54,6 @@
 | AmneziaWG（可选 Xray 适配器） | 3.1.20260828 | [MIT license and source](https://github.com/amnezia-vpn/amneziawg-go/tree/v3.1.20260828) |
 | mtg-multi（可选 MTProto 运行时） | 1.16.1 | [MIT license and source](https://github.com/MHSanaei/mtg-multi/tree/v1.16.1) |
 | Loyalsoldier GeoIP / GeoSite | 202610172205 | [GPL-3.0 license](https://github.com/Loyalsoldier/v2ray-rules-dat/blob/202610172205/LICENSE), [source and data provenance](https://github.com/Loyalsoldier/v2ray-rules-dat/tree/202610172205) |
+| IP Geolocation by DB-IP | 2026-11 City Lite | [CC BY 4.0 license and data source](https://db-ip.com/db/lite.php) |
 
 项目自有首页只调用独立测速服务，不复制其前端实现；OpenList 保留原生界面和账号权限模型。上游许可证、版权声明和数据来源以各固定版本仓库为准。

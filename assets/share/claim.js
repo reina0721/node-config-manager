@@ -42,8 +42,8 @@ button.addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key, request }),
     });
-    if (response.status === 409) {
-      message.textContent = '安装名额已用完，请联系管理员补充。';
+    if (response.status === 429) {
+      message.textContent = '当前领取请求较多，请稍后重试。';
       return;
     }
     if (response.status === 404) {

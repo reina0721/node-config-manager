@@ -78,8 +78,6 @@ test('只从共享客户端领取配置，已有设备可查看且原订阅有�
     );
     const profilePath = 'proxy-access/profile/' + legacy + '/subscriptions';
     const previous = await access<{ content: string }>(page, profilePath);
-    await access(page, 'proxy-access', { action: 'prepare-client', id: clientId, count: 2 });
-
     await navigate(page, '客户端');
     await expect(page.getByRole('tab', { name: '共享客户端' })).toHaveAttribute(
       'aria-selected',
@@ -96,6 +94,7 @@ test('只从共享客户端领取配置，已有设备可查看且原订阅有�
     await entry.click();
     const drawer = page.getByRole('dialog', { name: '领取与下载', exact: true });
     await expect(drawer.getByLabel('用户名', { exact: true })).toHaveCount(0);
+    await expect(drawer.getByText(/安装名额/)).toHaveCount(0);
     const mihomo = drawer.getByRole('button', { name: '下载 Mihomo 配置', exact: true });
     await expect(mihomo).toBeEnabled();
     const pending = page.waitForEvent('download');
@@ -114,6 +113,7 @@ test('只从共享客户端领取配置，已有设备可查看且原订阅有�
       .click();
     const account = page.getByRole('dialog', { name: username, exact: true });
     await expect(account.getByText('已有设备', { exact: true })).toBeVisible();
+    await expect(account.getByText('设备码', { exact: true })).toBeVisible();
     await expect(account.getByRole('button', { name: '撤销设备', exact: true })).toBeEnabled();
     await expect(account.getByRole('button', { name: /下载|导出.*配置/ })).toHaveCount(0);
     expect(await access(page, profilePath)).toEqual(previous);

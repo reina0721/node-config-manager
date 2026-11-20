@@ -596,7 +596,6 @@ export const proxyAccessSchema = z.object({
         usernames: z.array(z.string()),
         link_count: z.number(),
         claim_enabled: z.boolean().default(false),
-        claim_remaining: z.number().int().nonnegative().default(0),
       }),
     )
     .default([]),
@@ -627,6 +626,23 @@ export const proxyAccessSchema = z.object({
           label: z.string(),
           client: z.string().nullable().default(null),
           enrolled: z.boolean().default(false),
+          info: z
+            .object({
+              last_login: z.number().nullable(),
+              source_ip: z.string().nullable(),
+              source_observed_at: z.number().nullable().optional(),
+              location: z
+                .object({
+                  country: z.string().nullable(),
+                  region: z.string().nullable(),
+                  city: z.string().nullable(),
+                })
+                .nullable(),
+              system: z.string().nullable(),
+              system_version: z.string().nullable(),
+              client: z.object({ name: z.string(), version: z.string().nullable() }).nullable(),
+            })
+            .optional(),
           expires: z.number().nullable(),
           connections: z.number().default(0),
         }),
@@ -645,7 +661,6 @@ export type ProxyAccessChange =
       links: string[];
     }
   | { action: 'delete-client'; id: string }
-  | { action: 'prepare-client'; id: string; count: number }
   | { action: 'claim-client'; id: string; request: string }
   | { action: 'settings'; enabled: boolean; ttl_seconds: number }
   | { action: 'create'; users: { username: string; password: string; device_limit?: number }[] }

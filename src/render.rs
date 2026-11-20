@@ -6,7 +6,11 @@ use std::collections::BTreeMap;
 mod client_export;
 pub(crate) mod external;
 
-pub const TEMPLATE_VERSION: &str = "4";
+pub const TEMPLATE_VERSION: &str = "5";
+
+pub(crate) fn trusted_transport_origin(template_version: &str) -> bool {
+    template_version == "5"
+}
 
 pub fn template(source: &str, vars: &BTreeMap<&str, String>) -> Result<String> {
     let mut env = minijinja::Environment::new();
@@ -643,6 +647,15 @@ pub fn files_with_geodata(
     s: &Secrets,
     geodata: Option<&std::path::Path>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
+    files_for_template(c, s, geodata, true)
+}
+
+pub(crate) fn files_for_template(
+    c: &Config,
+    s: &Secrets,
+    geodata: Option<&std::path::Path>,
+    trusted_origin: bool,
+) -> Result<BTreeMap<String, Vec<u8>>> {
     let p = &c.ports;
     let addresses = if c.node.ipv6.is_empty() {
         vec!["".to_owned()]
@@ -778,7 +791,7 @@ pub fn files_with_geodata(
                 .to_string(),
         ),
     ]);
-    crate::web_services::nginx(c, &mut vars)?;
+    crate::web_services::nginx(c, &mut vars, trusted_origin)?;
     if c.shared_console {
         vars.entry("SHARE_LIMIT").or_default().push_str(
             "\n    limit_req_zone $binary_remote_addr zone=nc_requests:1m rate=2r/s;\n    limit_req_zone $binary_remote_addr zone=nc_login:1m rate=10r/m;"

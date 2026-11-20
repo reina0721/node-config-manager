@@ -118,10 +118,16 @@ fn snapshot_minimum(store: &Store) -> Result<[u64; 3]> {
     if proxy_access::has_enrollment(store)? {
         minimum = minimum.max([0, 12, 0]);
     }
+    if proxy_access::has_live_enrollment(store)? {
+        minimum = minimum.max([0, 13, 0]);
+    }
     for pointer in ["current", "previous"] {
         if let Some(id) = store.pointer(pointer)? {
             let (config, _, manifest) = store.verify_with_manifest(&id)?;
             let generator = stable_version(&manifest.generator_version)?;
+            if manifest.template_version == crate::render::TEMPLATE_VERSION {
+                minimum = minimum.max([0, 13, 0]);
+            }
             if config.shared_console || config.auth_portal.is_some() {
                 minimum = minimum.max(SHARED_CONSOLE_MINIMUM);
             }

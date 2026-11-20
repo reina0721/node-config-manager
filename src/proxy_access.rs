@@ -2,9 +2,12 @@
 pub(crate) mod amneziawg;
 mod clients;
 mod enrollment;
-pub(crate) use enrollment::request_claim as claim_client_subscription;
+pub(crate) use enrollment::{
+    report_subscription_client, request_claim as claim_client_subscription,
+};
 mod gateway;
 pub(crate) mod masque;
+mod metadata;
 mod meter;
 pub(crate) mod mtproto;
 mod runtime;
@@ -52,6 +55,8 @@ struct Database {
     devices: BTreeMap<Uuid, Device>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     clients: BTreeMap<Uuid, clients::Client>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    retired: BTreeSet<Uuid>,
 }
 
 impl Default for Database {
@@ -63,6 +68,7 @@ impl Default for Database {
             users: BTreeMap::new(),
             devices: BTreeMap::new(),
             clients: BTreeMap::new(),
+            retired: BTreeSet::new(),
         }
     }
 }
@@ -165,6 +171,8 @@ struct Device {
     attempts: Vec<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     enrollment: Option<enrollment::Enrollment>,
+    #[serde(default, skip_serializing_if = "metadata::DeviceInfo::is_empty")]
+    info: metadata::DeviceInfo,
 }
 
 struct Access<'a>(&'a Store);
@@ -174,6 +182,14 @@ impl Access<'_> {
         self.0.state_dir.join("proxy-access")
     }
     fn read(&self) -> Result<Option<Database>> {
+        let mut data = self.read_state()?;
+        if let Some(data) = &mut data {
+            data.devices
+                .retain(|_, device| !device.unclaimed_pool_entry());
+        }
+        Ok(data)
+    }
+    fn read_state(&self) -> Result<Option<Database>> {
         let path = self.dir().join("access.json");
         match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -358,10 +374,6 @@ pub enum Change {
     DeleteClient {
         id: Uuid,
     },
-    PrepareClient {
-        id: Uuid,
-        count: usize,
-    },
     ClaimClient {
         id: Uuid,
         request: Uuid,
@@ -406,6 +418,7 @@ impl Database {
                     .map(|(id, device)| {
                         let expires = if available { self.expiry(device, now) } else { None };
                         json!({"id":id,"label":device.label,"expires":expires,"client":device.client,
+                            "info":device.info,
                             "enrolled":device.enrollment.is_some(),
                             "connections": if expires.is_some() { online.get(id).copied().unwrap_or(0) } else { 0 }})
                     })
@@ -414,7 +427,7 @@ impl Database {
         }).collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"enabled":self.enabled, "ttl_seconds":self.ttl_seconds, "portal":portal, "users":users,
-                "clients":self.clients.iter().map(|(id, client)| client.view(*id, self)).collect::<Vec<_>>(),
+                "clients":self.clients.iter().map(|(id, client)| client.view(*id)).collect::<Vec<_>>(),
                 "enrollment_supported":true,
                 "extra_profile_formats":["xray-config","links","qr","native"], "traffic_cycles":true}),
         )
@@ -531,15 +544,20 @@ pub(crate) fn has_enrollment(store: &Store) -> Result<bool> {
         .is_some_and(|db| db.clients.values().any(|client| client.claim_key.is_some())))
 }
 
+pub(crate) fn has_live_enrollment(store: &Store) -> Result<bool> {
+    Ok(Access(store).read()?.is_some_and(|data| {
+        !data.retired.is_empty() || data.devices.values().any(Device::live_enrollment)
+    }))
+}
+
 pub(crate) fn client_links(store: &Store, id: Uuid) -> Result<Value> {
     let data = Access(store).read()?.context("not_found")?;
     let client = data.clients.get(&id).context("not_found")?;
-    let claim_url = if let Some(key) = client.claim_key {
-        let config = runtime::installed(store)?;
-        Some(format!(
-            "{}/nodes/claim/#{key}",
-            enrollment::origin(&config)
-        ))
+    let config = runtime::installed(store)?;
+    let claim_url = if data.enabled && config.distributes() {
+        client
+            .share_key(store, id)?
+            .map(|key| format!("{}/nodes/claim/#{key}", enrollment::origin(&config)))
     } else {
         None
     };
@@ -559,7 +577,6 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
             | Change::GroupMembers { .. }
             | Change::SaveClient { .. }
             | Change::DeleteClient { .. }
-            | Change::PrepareClient { .. }
             | Change::ClaimClient { .. }
     )
     .then(|| store.lock())
@@ -585,7 +602,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                     ensure!(
                         data.clients
                             .values()
-                            .all(|client| client.claim_key.is_none()),
+                            .all(|client| client.claim_key.is_none() && client.usernames.is_empty()),
                         "enrollment_requires_proxy_access"
                     );
                     ensure!(
@@ -761,6 +778,7 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
                     authenticated: None,
                     attempts: vec![],
                     enrollment: None,
+                    info: Default::default(),
                 },
             );
             created_device_id = Some(id);
@@ -799,19 +817,16 @@ pub fn change(store: &Store, action: Change, binary: &std::path::Path) -> Result
             data.clients.remove(&id).context("not_found")?;
             data.devices.retain(|_, device| device.client != Some(id));
         }
-        Change::PrepareClient { id, count } => {
-            let config = runtime::installed(store)?;
-            ensure!(config.distributes(), "enrollment_requires_distribution");
-            data.prepare_enrollment(id, count, admin_auth::now())?;
-            runtime::validate(store, binary)?;
-            refresh_xray = true;
-        }
         Change::ClaimClient { id, request } => {
             let config = runtime::installed(store)?;
             ensure!(config.distributes(), "enrollment_requires_distribution");
-            created_device_id = Some(data.claim_installation(id, request, admin_auth::now())?);
+            created_device_id = Some(enrollment::issue(store, &access, &mut data, id, request)?);
         }
     }
+    data.retired
+        .extend(previous.devices.iter().filter_map(|(id, device)| {
+            (device.live_enrollment() && !data.devices.contains_key(id)).then_some(*id)
+        }));
     let mode_changed = previous.enabled != data.enabled;
     if mode_changed {
         crate::host::command("systemctl", &["stop", "xray"])?;

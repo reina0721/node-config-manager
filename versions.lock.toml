@@ -4,6 +4,11 @@
 version = "1.27.2"
 metadata_url = "https://go.dev/dl/?mode=json&include=all"
 
+[device-geodata]
+version = "2026-11"
+city_url = "https://download.db-ip.com/free/dbip-city-lite-2026-11.mmdb.gz"
+city_sha256 = "b69c625515f636ac92112b71df26bb92a5748f648c79bad124ecd9ba1c97bf4a"
+
 [xray]
 repository = "https://github.com/XTLS/Xray-core"
 version = "26.10.21"

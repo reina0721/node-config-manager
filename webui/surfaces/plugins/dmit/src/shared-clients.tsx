@@ -180,7 +180,6 @@ export default function SharedClients({
           key={enrollmentClient.id}
           client={enrollmentClient}
           available={data.enabled && subscriptions}
-          refresh={refresh}
           onClose={() => setEnrollmentTarget(undefined)}
         />
       )}
